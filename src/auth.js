@@ -1,0 +1,99 @@
+'use strict';
+
+const crypto = require('crypto');
+const { db, nowISO } = require('./db');
+
+const SESSION_DAYS = 7;
+const COOKIE_NAME = 'ta_token';
+
+function parseCookies(req) {
+  const raw = req.headers.cookie || '';
+  const out = {};
+  for (const part of raw.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    const k = part.slice(0, idx).trim();
+    const v = part.slice(idx + 1).trim();
+    if (k) out[k] = decodeURIComponent(v);
+  }
+  return out;
+}
+
+function createSession(userId) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const created = new Date();
+  const expires = new Date(created.getTime() + SESSION_DAYS * 86400_000);
+  db.prepare(
+    'INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'
+  ).run(token, userId, created.toISOString(), expires.toISOString());
+  return { token, expires };
+}
+
+function destroySession(token) {
+  if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+function cleanupSessions() {
+  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(nowISO());
+}
+
+/** 解析当前登录用户，挂到 req.user（未登录则为 null） */
+function attachUser(req, res, next) {
+  req.cookies = parseCookies(req);
+  const token = req.cookies[COOKIE_NAME] || req.headers['x-auth-token'] || '';
+  req.token = token;
+  req.user = null;
+  if (token) {
+    const row = db
+      .prepare(
+        `SELECT u.id, u.username, u.name, u.role, u.dept, u.active, s.expires_at
+         FROM sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.token = ?`
+      )
+      .get(token);
+    if (row && row.active === 1 && new Date(row.expires_at) > new Date()) {
+      req.user = { id: row.id, username: row.username, name: row.name, role: row.role, dept: row.dept };
+    } else if (row) {
+      destroySession(token);
+    }
+  }
+  next();
+}
+
+function requireLogin(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: '未登录或登录已过期' });
+  next();
+}
+
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: '未登录或登录已过期' });
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ error: '当前角色无权执行该操作' });
+    }
+    next();
+  };
+}
+
+function setAuthCookie(res, token, expires) {
+  res.setHeader(
+    'Set-Cookie',
+    `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}`
+  );
+}
+
+function clearAuthCookie(res) {
+  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+}
+
+module.exports = {
+  COOKIE_NAME,
+  attachUser,
+  requireLogin,
+  requireRole,
+  createSession,
+  destroySession,
+  cleanupSessions,
+  setAuthCookie,
+  clearAuthCookie,
+};

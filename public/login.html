@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · 任务分配系统</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-hero">
+    <h1>任务分配协同系统</h1>
+    <p>创建任务 · 自动派发 · 执行跟踪 · 耗时统计 · 数据大屏</p>
+    <div class="hero-points">
+      <div class="hero-point"><span class="dot">1</span><div><b>分配者</b>发布任务并指定执行人，支持附件</div></div>
+      <div class="hero-point"><span class="dot">2</span><div><b>执行者</b>收到任务后执行，完成即标记</div></div>
+      <div class="hero-point"><span class="dot">3</span><div><b>管理员</b>管理账号、总览全部任务</div></div>
+      <div class="hero-point"><span class="dot">4</span><div><b>数据大屏</b>实时展示执行中 / 已完成与耗时</div></div>
+    </div>
+  </div>
+
+  <div class="login-panel">
+    <div class="login-card">
+      <h2>欢迎回来</h2>
+      <p class="sub">请使用系统分配的账号登录</p>
+      <form id="loginForm">
+        <div class="field">
+          <label>账号</label>
+          <input class="input" id="username" autocomplete="username" placeholder="请输入账号" required>
+        </div>
+        <div class="field">
+          <label>密码</label>
+          <input class="input" id="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+        </div>
+        <button class="btn block" type="submit" id="submitBtn">登 录</button>
+      </form>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+function toast(msg, type) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'show ' + (type || '');
+  setTimeout(() => (t.className = ''), 2600);
+}
+$('#loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('#submitBtn');
+  btn.disabled = true; btn.textContent = '登录中...';
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('#username').value.trim(), password: $('#password').value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '登录失败');
+    location.href = '/index.html';
+  } catch (err) {
+    toast(err.message, 'err');
+    btn.disabled = false; btn.textContent = '登 录';
+  }
+});
+</script>
+</body>
+</html>

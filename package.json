@@ -1,0 +1,15 @@
+{
+  "name": "taskassign",
+  "version": "1.0.0",
+  "description": "任务分配系统 - 多角色任务派发、执行跟踪与数据大屏",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "reset": "node scripts/reset.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "multer": "^2.0.2"
+  }
+}
