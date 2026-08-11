@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>工作台 · 任务分配系统</title>
-<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="/css/style.css?v=20260811-4">
 </head>
 <body>
 
@@ -149,7 +149,7 @@
           <label for="tfFiles">附件</label>
           <div class="dropzone" id="dropzone">
             点击选择文件，或将文件拖拽到此处<br>
-            <span class="hint">单个不超过 50MB，最多 10 个</span>
+            <span class="hint">单个附件不得超过 50MB，最多 10 个</span>
           </div>
           <input type="file" id="tfFiles" multiple hidden>
           <div class="file-list" id="fileList"></div>
@@ -157,6 +157,13 @@
       </form>
     </div>
     <div class="modal-foot">
+      <div class="upload-status" id="tfUploadStatus" hidden aria-live="polite">
+        <div class="upload-status-line">
+          <span id="tfUploadText">准备上传...</span>
+          <button type="button" class="btn ghost sm" id="btnCancelTaskUpload">取消上传</button>
+        </div>
+        <div class="upload-track"><i id="tfUploadBar"></i></div>
+      </div>
       <button class="btn ghost" data-close>取消</button>
       <button class="btn" id="btnSaveTask">保存并派发</button>
     </div>
@@ -226,7 +233,7 @@
   <div class="modal" style="max-width:480px" role="dialog" aria-modal="true" aria-labelledby="doneModalTitle">
     <div class="modal-head"><h3 id="doneModalTitle">标记任务执行完成</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
-      <div id="doneTaskInfo" style="margin-bottom:14px;padding:12px 14px;background:#f7f9fc;border-radius:8px"></div>
+      <div id="doneTaskInfo" class="done-task-info"></div>
       <div class="field">
         <label for="doneNote">完成说明</label>
         <textarea class="input" id="doneNote" placeholder="简要说明完成情况、结果或交付物（可留空）"></textarea>
@@ -281,7 +288,24 @@
   </div>
 </div>
 
+<!-- ============ 统一确认弹窗 ============ -->
+<div class="modal-mask" id="confirmModal" aria-hidden="true">
+  <div class="modal" style="max-width:440px" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+    <div class="modal-head">
+      <h3 id="confirmTitle">请确认</h3>
+      <button class="x" data-close aria-label="关闭">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="confirmMessage" class="confirm-message"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close>取消</button>
+      <button class="btn danger" id="btnConfirmAction">确认</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="/js/app.js"></script>
+<script src="/js/app.js?v=20260811-3"></script>
 </body>
 </html>

@@ -41,7 +41,7 @@ app.use((err, req, res, next) => {
       err.code === 'LIMIT_FILE_SIZE' ? '单个附件不能超过 50MB'
         : err.code === 'LIMIT_FILE_COUNT' ? '一次最多上传 10 个附件'
           : `附件上传失败：${err.message}`;
-    return res.status(400).json({ error: msg });
+    return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: msg });
   }
   console.error('[error]', err);
   res.status(500).json({ error: err.message || '服务器内部错误' });
@@ -49,10 +49,13 @@ app.use((err, req, res, next) => {
 
 setInterval(cleanupSessions, 6 * 3600 * 1000).unref();
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log('');
   console.log('  任务分配系统已启动');
   console.log(`  工作台：http://${HOST}:${PORT}/index.html`);
   console.log(`  大屏：  http://${HOST}:${PORT}/screen.html`);
   console.log('');
 });
+
+// Large LAN uploads may legitimately take longer than Node's default 5-minute request window.
+server.requestTimeout = 30 * 60 * 1000;

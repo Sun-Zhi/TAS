@@ -11,6 +11,7 @@ const { requireLogin, requireRole } = require('../auth');
 const { taskDuration, humanDuration, toCSV, fmtLocal, PRIORITY_TEXT, STATUS_TEXT } = require('../utils');
 
 const router = express.Router();
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 /* ---------------- 附件上传配置 ---------------- */
 
@@ -24,7 +25,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024, files: 10 },
+  limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 10 },
 });
 
 function removeUploadedFiles(files) {
@@ -261,6 +262,9 @@ router.post('/', requireRole('admin', 'assigner'), upload.array('files', 10), (r
 
   const normalizedDueAt = normalizeDueAt(due_at);
   if (!normalizedDueAt.valid) return rejectUploadedRequest(req, res, next, 400, '截止时间不合法');
+  if (normalizedDueAt.value && new Date(normalizedDueAt.value).getTime() <= Date.now()) {
+    return rejectUploadedRequest(req, res, next, 400, '要求完成时间必须晚于当前时间');
+  }
 
   const pr = ['low', 'normal', 'high', 'urgent'].includes(priority) ? priority : 'normal';
   let taskId;
@@ -346,6 +350,10 @@ router.patch('/:id', requireLogin, (req, res) => {
   if (due_at !== undefined) {
     const normalizedDueAt = normalizeDueAt(due_at);
     if (!normalizedDueAt.valid) return res.status(400).json({ error: '截止时间不合法' });
+    const unchanged = normalizedDueAt.value === task.due_at;
+    if (normalizedDueAt.value && !unchanged && new Date(normalizedDueAt.value).getTime() <= Date.now()) {
+      return res.status(400).json({ error: '要求完成时间必须晚于当前时间' });
+    }
     sets.push('due_at = ?'); args.push(normalizedDueAt.value); changes.push('截止时间');
   }
   if (assignee_id !== undefined && Number(assignee_id) !== task.assignee_id) {

@@ -7,6 +7,7 @@ const $$ = (s) => Array.from(document.querySelectorAll(s));
 const ROLE_TEXT = { admin: '管理员', assigner: '任务分配者', executor: '任务执行者' };
 const PRI_TEXT = { low: '低', normal: '普通', high: '高', urgent: '紧急' };
 const STATUS_TEXT = { in_progress: '执行中', completed: '已完成' };
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 const state = {
   me: null,
@@ -80,8 +81,60 @@ async function api(url, options = {}) {
   return data;
 }
 
+function uploadForm(url, formData, { onProgress, onUploaded, signal, timeoutMs = 30 * 60 * 1000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    const finish = (action) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener('abort', abortUpload);
+      action();
+    };
+    const abortUpload = () => xhr.abort();
+
+    xhr.open('POST', url, true);
+    xhr.withCredentials = true;
+    xhr.timeout = timeoutMs;
+    xhr.upload.addEventListener('progress', (event) => {
+      if (!event.lengthComputable || !onProgress) return;
+      onProgress({ loaded: event.loaded, total: event.total, percent: Math.min(100, Math.round(event.loaded / event.total * 100)) });
+    });
+    xhr.upload.addEventListener('load', () => { if (onUploaded) onUploaded(); });
+    xhr.addEventListener('load', () => finish(() => {
+      const contentType = xhr.getResponseHeader('content-type') || '';
+      let data = xhr.responseText;
+      if (contentType.includes('json')) {
+        try { data = JSON.parse(xhr.responseText || '{}'); } catch { data = {}; }
+      }
+      if (xhr.status === 401) {
+        location.href = '/login.html';
+        return reject(new Error('未登录'));
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        return reject(new Error((data && data.error) || `上传失败（HTTP ${xhr.status}）`));
+      }
+      resolve(data);
+    }));
+    xhr.addEventListener('error', () => finish(() => reject(new Error('上传连接中断，请检查网络后重试'))));
+    xhr.addEventListener('timeout', () => finish(() => reject(new Error('上传超过 30 分钟，已自动停止'))));
+    xhr.addEventListener('abort', () => finish(() => reject(new Error('上传已取消'))));
+
+    if (signal) {
+      if (signal.aborted) return finish(() => reject(new Error('上传已取消')));
+      signal.addEventListener('abort', abortUpload, { once: true });
+    }
+    xhr.send(formData);
+  });
+}
+
+function uploadProgressText({ loaded, total, percent }) {
+  return `上传中 ${percent}% · ${fileSize(loaded)} / ${fileSize(total)}`;
+}
+
 /* ---------------- 自定义日期时间选择器 ---------------- */
 const duePicker = { open: false, view: new Date(), selected: null, focused: null, hour: '09', minute: '00' };
+const DUE_STEP_MINUTES = 5;
 function pad2(n) { return String(n).padStart(2, '0'); }
 
 function dateAtMidnight(date) {
@@ -93,12 +146,36 @@ function sameDate(a, b) {
     a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+function nextFutureDue(from = new Date()) {
+  const next = new Date(from.getTime() + DUE_STEP_MINUTES * 60 * 1000);
+  next.setSeconds(0, 0);
+  const remainder = next.getMinutes() % DUE_STEP_MINUTES;
+  if (remainder) next.setMinutes(next.getMinutes() + DUE_STEP_MINUTES - remainder);
+  return next;
+}
+
+function pickerDateTime() {
+  if (!duePicker.selected) return null;
+  return new Date(
+    duePicker.selected.getFullYear(),
+    duePicker.selected.getMonth(),
+    duePicker.selected.getDate(),
+    Number(duePicker.hour),
+    Number(duePicker.minute),
+    0,
+    0
+  );
+}
+
 function changeDuePickerMonth(delta) {
   const y = duePicker.view.getFullYear();
   const m = duePicker.view.getMonth();
   const focusDay = duePicker.focused ? duePicker.focused.getDate() : 1;
   // 先落到目标月 1 日，避免 29-31 日调用 setMonth 时溢出到下下个月。
-  const target = new Date(y, m + delta, 1);
+  const earliest = nextFutureDue();
+  const minimumMonth = new Date(earliest.getFullYear(), earliest.getMonth(), 1);
+  let target = new Date(y, m + delta, 1);
+  if (target < minimumMonth) target = minimumMonth;
   const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
   duePicker.view = target;
   duePicker.focused = new Date(target.getFullYear(), target.getMonth(), Math.min(focusDay, lastDay));
@@ -154,9 +231,10 @@ function initDuePicker() {
 
   $('#dpDays').addEventListener('click', (e) => {
     const cell = e.target.closest('.dp-day');
-    if (!cell) return;
+    if (!cell || cell.disabled) return;
     duePicker.selected = new Date(duePicker.view.getFullYear(), duePicker.view.getMonth(), Number(cell.dataset.day));
     duePicker.focused = dateAtMidnight(duePicker.selected);
+    syncDueTimeInputs();
     renderDuePicker(true);
   });
 
@@ -185,6 +263,8 @@ function initDuePicker() {
     }
     if (!next) return;
     e.preventDefault();
+    const minimumDay = dateAtMidnight(nextFutureDue());
+    if (next < minimumDay) next = minimumDay;
     duePicker.focused = next;
     duePicker.view = new Date(next.getFullYear(), next.getMonth(), 1);
     renderDuePicker(true);
@@ -197,7 +277,10 @@ function initDuePicker() {
     });
   });
 
-  $('#dpHour').addEventListener('change', (e) => { duePicker.hour = e.target.value; });
+  $('#dpHour').addEventListener('change', (e) => {
+    duePicker.hour = e.target.value;
+    syncDueTimeInputs();
+  });
   $('#dpMinute').addEventListener('change', (e) => { duePicker.minute = e.target.value; });
 
   picker.addEventListener('click', (e) => {
@@ -205,12 +288,12 @@ function initDuePicker() {
     if (!btn || btn.classList.contains('dp-nav')) return;
     const action = btn.dataset.dp;
     if (action === 'today') {
-      const now = new Date();
-      duePicker.selected = now;
-      duePicker.focused = dateAtMidnight(now);
-      duePicker.view = new Date(now.getFullYear(), now.getMonth(), 1);
-      duePicker.hour = pad2(now.getHours());
-      duePicker.minute = pad2(Math.floor(now.getMinutes() / 5) * 5);
+      const next = nextFutureDue();
+      duePicker.selected = next;
+      duePicker.focused = dateAtMidnight(next);
+      duePicker.view = new Date(next.getFullYear(), next.getMonth(), 1);
+      duePicker.hour = pad2(next.getHours());
+      duePicker.minute = pad2(next.getMinutes());
       syncDueTimeInputs();
       renderDuePicker();
     } else if (action === 'clear') {
@@ -225,7 +308,7 @@ function initDuePicker() {
 function openDuePicker() {
   duePicker.open = true;
   const val = $('#tfDue').value;
-  if (val) {
+  if (val && new Date(val).getTime() > Date.now()) {
     const d = new Date(val);
     duePicker.selected = new Date(d);
     duePicker.focused = dateAtMidnight(d);
@@ -233,12 +316,12 @@ function openDuePicker() {
     duePicker.hour = pad2(d.getHours());
     duePicker.minute = pad2(d.getMinutes());
   } else {
-    duePicker.selected = null;
-    const now = new Date();
-    duePicker.focused = dateAtMidnight(now);
-    duePicker.view = new Date(now.getFullYear(), now.getMonth(), 1);
-    duePicker.hour = '09';
-    duePicker.minute = '00';
+    const next = nextFutureDue();
+    duePicker.selected = next;
+    duePicker.focused = dateAtMidnight(next);
+    duePicker.view = new Date(next.getFullYear(), next.getMonth(), 1);
+    duePicker.hour = pad2(next.getHours());
+    duePicker.minute = pad2(next.getMinutes());
   }
   syncDueTimeInputs();
   renderDuePicker();
@@ -302,8 +385,25 @@ function positionDuePicker() {
 }
 
 function syncDueTimeInputs() {
-  $('#dpHour').value = duePicker.hour;
-  $('#dpMinute').value = duePicker.minute;
+  const hourSelect = $('#dpHour');
+  const minuteSelect = $('#dpMinute');
+  const earliest = nextFutureDue();
+  const onEarliestDay = sameDate(duePicker.selected, earliest);
+
+  if (onEarliestDay && pickerDateTime() < earliest) {
+    duePicker.hour = pad2(earliest.getHours());
+    duePicker.minute = pad2(earliest.getMinutes());
+  }
+
+  Array.from(hourSelect.options).forEach((option) => {
+    option.disabled = onEarliestDay && Number(option.value) < earliest.getHours();
+  });
+  Array.from(minuteSelect.options).forEach((option) => {
+    option.disabled = onEarliestDay && Number(duePicker.hour) === earliest.getHours() &&
+      Number(option.value) < earliest.getMinutes();
+  });
+  hourSelect.value = duePicker.hour;
+  minuteSelect.value = duePicker.minute;
 }
 
 function renderDuePicker(restoreFocus = false) {
@@ -313,7 +413,11 @@ function renderDuePicker(restoreFocus = false) {
   const daysInMonth = new Date(y, m + 1, 0).getDate();
   let html = '';
   const today = dateAtMidnight(new Date());
+  const minimumDay = dateAtMidnight(nextFutureDue());
+  const minimumMonth = new Date(minimumDay.getFullYear(), minimumDay.getMonth(), 1);
+  $('#tfDuePicker [data-dp="prev"]').disabled = new Date(y, m, 1) <= minimumMonth;
   let focusDate = duePicker.focused;
+  if (focusDate && focusDate < minimumDay) focusDate = minimumDay;
   if (!focusDate || focusDate.getFullYear() !== y || focusDate.getMonth() !== m) {
     focusDate = duePicker.selected && duePicker.selected.getFullYear() === y && duePicker.selected.getMonth() === m
       ? dateAtMidnight(duePicker.selected)
@@ -324,18 +428,33 @@ function renderDuePicker(restoreFocus = false) {
   for (let d = 1; d <= daysInMonth; d++) {
     const cls = [];
     const cur = new Date(y, m, d);
+    const disabled = cur < minimumDay;
     const selected = sameDate(cur, duePicker.selected);
     if (selected) cls.push('selected');
     if (sameDate(cur, today)) cls.push('today');
-    const tabIndex = sameDate(cur, focusDate) ? 0 : -1;
-    html += `<button type="button" role="gridcell" class="dp-day ${cls.join(' ')}" data-day="${d}" tabindex="${tabIndex}" aria-selected="${selected}" aria-label="${y}年${m + 1}月${d}日">${d}</button>`;
+    if (disabled) cls.push('disabled');
+    const tabIndex = !disabled && sameDate(cur, focusDate) ? 0 : -1;
+    html += `<button type="button" role="gridcell" class="dp-day ${cls.join(' ')}" data-day="${d}" tabindex="${tabIndex}" aria-selected="${selected}" aria-label="${y}年${m + 1}月${d}日${disabled ? '，不可选择' : ''}" ${disabled ? 'disabled' : ''}>${d}</button>`;
   }
   $('#dpDays').innerHTML = html;
+  syncDueTimeInputs();
   if (restoreFocus) requestAnimationFrame(focusDueDay);
 }
 
 function commitDue() {
   if (!duePicker.selected) { toast('请先选择日期', 'err'); return false; }
+  const selected = pickerDateTime();
+  if (!selected || selected.getTime() <= Date.now()) {
+    toast('要求完成时间必须晚于当前时间', 'err');
+    const next = nextFutureDue();
+    duePicker.selected = next;
+    duePicker.focused = dateAtMidnight(next);
+    duePicker.view = new Date(next.getFullYear(), next.getMonth(), 1);
+    duePicker.hour = pad2(next.getHours());
+    duePicker.minute = pad2(next.getMinutes());
+    renderDuePicker(true);
+    return false;
+  }
   const y = duePicker.selected.getFullYear();
   const m = pad2(duePicker.selected.getMonth() + 1);
   const d = pad2(duePicker.selected.getDate());
@@ -379,14 +498,40 @@ function openModal(id) {
   });
 }
 
+let confirmResolver = null;
+
 function closeModal(id) {
   const mask = $(id);
   if (!mask || !mask.classList.contains('show')) return;
+  if (id === '#confirmModal' && confirmResolver) {
+    const resolve = confirmResolver;
+    confirmResolver = null;
+    resolve(false);
+  }
   if (id === '#taskModal') closeDuePicker();
   mask.classList.remove('show');
   mask.setAttribute('aria-hidden', 'true');
   if (mask._returnFocus && document.contains(mask._returnFocus)) mask._returnFocus.focus();
 }
+
+function settleConfirm(value) {
+  if (!confirmResolver) return;
+  const resolve = confirmResolver;
+  confirmResolver = null;
+  closeModal('#confirmModal');
+  resolve(value);
+}
+
+function askConfirm(message, title = '请确认', confirmText = '确认') {
+  if (confirmResolver) settleConfirm(false);
+  $('#confirmTitle').textContent = title;
+  $('#confirmMessage').textContent = message;
+  $('#btnConfirmAction').textContent = confirmText;
+  openModal('#confirmModal');
+  return new Promise((resolve) => { confirmResolver = resolve; });
+}
+
+$('#btnConfirmAction').addEventListener('click', () => settleConfirm(true));
 
 $$('.modal-mask').forEach((mask) => {
   mask.addEventListener('click', (e) => {
@@ -597,13 +742,19 @@ function renderBatchDeleteButton(count, loading = false) {
 
 async function delTask(id, ev) {
   if (ev) ev.stopPropagation();
-  if (!confirm('确认删除该任务？附件将一并清除，不可恢复。')) return;
+  if (!await askConfirm('附件将一并清除，删除后不可恢复。', '删除任务', '确认删除')) return;
+  const btn = ev && ev.currentTarget;
+  const originalText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '删除中...'; }
   try {
     await api('/api/tasks/' + id, { method: 'DELETE' });
     state.selectedIds.delete(id);
     toast('任务已删除', 'ok');
     runAsync(() => refresh(), '任务列表刷新失败');
   } catch (e) { toast(e.message, 'err'); }
+  finally {
+    if (btn && document.contains(btn)) { btn.disabled = false; btn.textContent = originalText; }
+  }
 }
 window.delTask = delTask;
 
@@ -614,7 +765,7 @@ $('#btnBatchDel').addEventListener('click', async () => {
     return t && canDelete(t);
   });
   if (!ids.length) return;
-  if (!confirm(`确认删除选中的 ${ids.length} 个任务？附件将一并清除，不可恢复。`)) return;
+  if (!await askConfirm(`将删除选中的 ${ids.length} 个任务及其附件，删除后不可恢复。`, '批量删除任务', '确认删除')) return;
   const btn = $('#btnBatchDel');
   btn.disabled = true;
   renderBatchDeleteButton(0, true);
@@ -633,7 +784,7 @@ $('#btnBatchDel').addEventListener('click', async () => {
 
 /* ---------------- 任务详情 ---------------- */
 
-async function showDetail(id) {
+async function loadTaskDetail(id) {
   const { task: t, attachments, logs } = await api('/api/tasks/' + id);
   $('#dtTitle').textContent = `T${String(t.id).padStart(4, '0')} · ${t.title}`;
 
@@ -670,8 +821,10 @@ async function showDetail(id) {
       <div class="file-list">${attHtml}</div>
       ${canUpload ? `<div style="margin-top:8px">
         <input type="file" id="dtFiles" multiple hidden>
-        <button class="btn ghost sm" onclick="document.getElementById('dtFiles').click()">＋ 上传附件</button>
-        <span class="hint" id="dtUpTip"></span></div>` : ''}
+        <button class="btn ghost sm" id="dtUploadButton" onclick="document.getElementById('dtFiles').click()">＋ 上传附件</button>
+        <button class="btn ghost sm" id="dtCancelUpload" hidden>取消上传</button>
+        <span class="hint">单个附件不得超过 50MB</span>
+        <span class="hint upload-inline-progress" id="dtUpTip"></span></div>` : ''}
     </div></div>
     <div class="detail-row"><div class="lb">操作记录</div><div class="vl">
       <ul class="timeline">${logs.map((l) => `<li>
@@ -683,15 +836,35 @@ async function showDetail(id) {
     $('#dtFiles').addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
       if (!files.length) return;
+      if (files.length > 10) { e.target.value = ''; return toast('一次最多上传 10 个附件', 'err'); }
+      const oversized = files.find((file) => file.size > MAX_ATTACHMENT_BYTES);
+      if (oversized) { e.target.value = ''; return toast(`「${oversized.name}」超过 50MB，不能上传`, 'err'); }
       const fd = new FormData();
       files.forEach((f) => fd.append('files', f));
-      $('#dtUpTip').textContent = '上传中...';
+      const controller = new AbortController();
+      const uploadButton = $('#dtUploadButton');
+      const cancelButton = $('#dtCancelUpload');
+      uploadButton.disabled = true;
+      cancelButton.hidden = false;
+      cancelButton.onclick = () => controller.abort();
+      $('#dtUpTip').textContent = '准备上传...';
       try {
-        await api(`/api/tasks/${id}/attachments`, { method: 'POST', body: fd });
+        await uploadForm(`/api/tasks/${id}/attachments`, fd, {
+          signal: controller.signal,
+          onProgress: (progress) => { $('#dtUpTip').textContent = uploadProgressText(progress); },
+          onUploaded: () => { $('#dtUpTip').textContent = '文件已发送，服务器处理中...'; },
+        });
         toast('附件上传成功', 'ok');
-        runAsync(() => showDetail(id), '任务详情刷新失败');
+        runAsync(() => loadTaskDetail(id), '任务详情刷新失败');
         runAsync(() => loadTasks(), '任务列表刷新失败');
-      } catch (err) { toast(err.message, 'err'); }
+      } catch (err) {
+        $('#dtUpTip').textContent = err.message;
+        toast(err.message, 'err');
+      } finally {
+        uploadButton.disabled = false;
+        cancelButton.hidden = true;
+        e.target.value = '';
+      }
     });
   }
 
@@ -707,7 +880,7 @@ async function showDetail(id) {
 
   openModal('#detailModal');
 }
-window.showDetail = (id) => runAsync(() => showDetail(id), '任务详情加载失败');
+window.showDetail = (id) => runAsync(() => loadTaskDetail(id), '任务详情加载失败');
 
 /* ---------------- 任务操作 ---------------- */
 
@@ -741,7 +914,7 @@ $('#btnConfirmDone').addEventListener('click', async () => {
 });
 
 async function reopenTask(id) {
-  if (!confirm('确认重新开启该任务？完成时间与耗时将被清空。')) return;
+  if (!await askConfirm('完成时间与耗时将被清空。', '重新开启任务', '确认重新开启')) return;
   try {
     await api('/api/tasks/' + id, { method: 'PATCH', body: { status: 'in_progress' } });
     toast('任务已重新开启', 'ok');
@@ -752,7 +925,7 @@ async function reopenTask(id) {
 window.reopenTask = reopenTask;
 
 async function removeTask(id) {
-  if (!confirm('确认删除该任务？删除后不可恢复（含附件）。')) return;
+  if (!await askConfirm('任务及其附件将被一并删除，删除后不可恢复。', '删除任务', '确认删除')) return;
   try {
     await api('/api/tasks/' + id, { method: 'DELETE' });
     toast('任务已删除', 'ok');
@@ -762,7 +935,7 @@ async function removeTask(id) {
 }
 window.removeTask = removeTask;
 
-async function editTask(id) {
+async function openTaskEditor(id) {
   const { task: t } = await api('/api/tasks/' + id);
   closeModal('#detailModal');
   $('#taskModalTitle').textContent = '编辑任务';
@@ -773,11 +946,12 @@ async function editTask(id) {
   $('#tfCategory').value = t.category;
   $('#tfPriority').value = t.priority;
   setDue(t.due_at);
+  $('#tfDue').dataset.original = $('#tfDue').value;
   $('#tfFileField').style.display = 'none';
   $('#btnSaveTask').textContent = '保存修改';
   openModal('#taskModal');
 }
-window.editTask = (id) => runAsync(() => editTask(id), '任务加载失败，暂时无法编辑');
+window.editTask = (id) => runAsync(() => openTaskEditor(id), '任务加载失败，暂时无法编辑');
 
 /* ---------------- 新建任务 ---------------- */
 
@@ -785,6 +959,7 @@ $('#btnNewTask').addEventListener('click', () => {
   $('#taskModalTitle').textContent = '发布新任务';
   $('#taskForm').reset();
   clearDue();
+  $('#tfDue').dataset.original = '';
   $('#tfId').value = '';
   $('#tfPriority').value = 'normal';
   state.pendingFiles = [];
@@ -802,12 +977,15 @@ dz.addEventListener('drop', (e) => {
   e.preventDefault(); dz.classList.remove('over');
   addFiles(Array.from(e.dataTransfer.files));
 });
-$('#tfFiles').addEventListener('change', (e) => addFiles(Array.from(e.target.files)));
+$('#tfFiles').addEventListener('change', (e) => {
+  addFiles(Array.from(e.target.files));
+  e.target.value = '';
+});
 
 function addFiles(files) {
   for (const f of files) {
     if (state.pendingFiles.length >= 10) { toast('最多上传 10 个附件', 'err'); break; }
-    if (f.size > 50 * 1024 * 1024) { toast(`「${f.name}」超过 50MB`, 'err'); continue; }
+    if (f.size > MAX_ATTACHMENT_BYTES) { toast(`「${f.name}」超过 50MB，不能上传`, 'err'); continue; }
     state.pendingFiles.push(f);
   }
   renderPendingFiles();
@@ -821,14 +999,29 @@ function renderPendingFiles() {
 }
 window.rmFile = (i) => { state.pendingFiles.splice(i, 1); renderPendingFiles(); };
 
+let taskUploadController = null;
+$('#btnCancelTaskUpload').addEventListener('click', () => {
+  if (taskUploadController) taskUploadController.abort();
+});
+
 $('#btnSaveTask').addEventListener('click', async () => {
   const id = $('#tfId').value;
   const title = $('#tfTitle').value.trim();
   const assignee = $('#tfAssignee').value;
   if (!title) return toast('请填写任务标题', 'err');
   if (!assignee) return toast('请指定任务执行人', 'err');
+  const dueValue = $('#tfDue').value;
+  const dueTime = dueValue ? new Date(dueValue).getTime() : null;
+  const originalDue = $('#tfDue').dataset.original;
+  const unchangedExistingDue = Boolean(id && originalDue && dueTime === new Date(originalDue).getTime());
+  if (dueTime && dueTime <= Date.now() && !unchangedExistingDue) {
+    return toast('要求完成时间必须晚于当前时间', 'err');
+  }
+  const oversized = state.pendingFiles.find((file) => file.size > MAX_ATTACHMENT_BYTES);
+  if (oversized) return toast(`「${oversized.name}」超过 50MB，不能上传`, 'err');
 
   const btn = $('#btnSaveTask');
+  const originalButtonText = btn.textContent;
   btn.disabled = true;
   try {
     if (id) {
@@ -850,14 +1043,38 @@ $('#btnSaveTask').addEventListener('click', async () => {
       fd.append('assignee_id', assignee);
       if ($('#tfDue').value) fd.append('due_at', $('#tfDue').value);
       state.pendingFiles.forEach((f) => fd.append('files', f));
-      await api('/api/tasks', { method: 'POST', body: fd });
+      taskUploadController = new AbortController();
+      const status = $('#tfUploadStatus');
+      status.hidden = false;
+      $('#tfUploadText').textContent = '准备上传...';
+      $('#tfUploadBar').style.width = '0%';
+      $$('#taskModal [data-close]').forEach((closeButton) => { closeButton.disabled = true; });
+      await uploadForm('/api/tasks', fd, {
+        signal: taskUploadController.signal,
+        onProgress: (progress) => {
+          $('#tfUploadText').textContent = uploadProgressText(progress);
+          $('#tfUploadBar').style.width = `${progress.percent}%`;
+          btn.textContent = `上传中 ${progress.percent}%`;
+        },
+        onUploaded: () => {
+          $('#tfUploadText').textContent = '文件已发送，服务器处理中...';
+          $('#tfUploadBar').style.width = '100%';
+          btn.textContent = '服务器处理中...';
+        },
+      });
       toast('任务已发布并派发给执行人', 'ok');
     }
     closeModal('#taskModal');
     state.pendingFiles = [];
     runAsync(() => refresh(), '任务列表刷新失败');
   } catch (e) { toast(e.message, 'err'); }
-  finally { btn.disabled = false; }
+  finally {
+    taskUploadController = null;
+    btn.disabled = false;
+    btn.textContent = originalButtonText;
+    $('#tfUploadStatus').hidden = true;
+    $$('#taskModal [data-close]').forEach((closeButton) => { closeButton.disabled = false; });
+  }
 });
 
 /* ---------------- 筛选 ---------------- */
@@ -990,7 +1207,7 @@ window.toggleUser = async (id, active) => {
 };
 
 window.delUser = async (id) => {
-  if (!confirm('确认删除该用户？')) return;
+  if (!await askConfirm('删除后该账号将无法登录。', '删除用户', '确认删除')) return;
   try {
     await api('/api/users/' + id, { method: 'DELETE' });
     toast('用户已删除', 'ok');

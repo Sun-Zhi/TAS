@@ -245,6 +245,19 @@ async function main() {
   ok(invalidCreateDate.status === 400, '创建任务的无效日期返回 400');
   ok(sameSet(before, uploadNames()), '无效创建日期不留下文件');
 
+  before = uploadNames();
+  const pastCreateDate = await request('/api/tasks', {
+    method: 'POST',
+    token: assignerA,
+    body: form(
+      { title: `${marker}_past_date`, assignee_id: executorAId, due_at: '2020-01-02T03:04:05Z' },
+      `${marker}_past_date.txt`,
+      'past-date'
+    ),
+  });
+  ok(pastCreateDate.status === 400, '创建任务的过去截止时间被拒绝');
+  ok(sameSet(before, uploadNames()), '过去截止时间不留下文件');
+
   console.log('\n【3】数据库原子性与失败清理');
   db.exec(`
     CREATE TRIGGER task_security_attachment_abort
@@ -298,11 +311,18 @@ async function main() {
   ok(invalidPatch.status === 400, '编辑任务的无效日期返回 400');
   ok(db.prepare('SELECT due_at FROM tasks WHERE id = ?').get(taskA).due_at === null, '无效日期不会改写任务');
 
+  const pastPatch = await request(`/api/tasks/${taskA}`, {
+    method: 'PATCH', token: assignerA, body: { due_at: '2020-01-02T03:04:05Z' },
+  });
+  ok(pastPatch.status === 400, '编辑任务不能设置过去的截止时间');
+  ok(db.prepare('SELECT due_at FROM tasks WHERE id = ?').get(taskA).due_at === null, '过去截止时间不会改写任务');
+
+  const futureDue = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
   const validCreate = await request('/api/tasks', {
     method: 'POST',
     token: assignerA,
     body: form(
-      { title: `${marker}_valid_create`, assignee_id: executorAId, due_at: '2030-01-02T03:04:05Z' },
+      { title: `${marker}_valid_create`, assignee_id: executorAId, due_at: futureDue },
       `${marker}_valid_create.txt`,
       'valid-create'
     ),
@@ -311,7 +331,7 @@ async function main() {
   const validCreatedTask = validCreate.status === 201
     ? db.prepare('SELECT due_at FROM tasks WHERE id = ?').get(validCreate.data.id)
     : null;
-  ok(validCreatedTask && validCreatedTask.due_at === '2030-01-02T03:04:05.000Z', '合法截止时间仍规范化保存');
+  ok(validCreatedTask && validCreatedTask.due_at === futureDue, '合法截止时间仍规范化保存');
 
   const validAppend = await request(`/api/tasks/${taskA}/attachments`, {
     method: 'POST',
