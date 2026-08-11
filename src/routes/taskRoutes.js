@@ -146,12 +146,14 @@ function scopeClause(user) {
 
 function decorate(t) {
   const ms = taskDuration(t);
+  const awaitingConfirmation = t.status === 'in_progress' && Boolean(t.completion_requested_at);
   const overdue =
-    t.status === 'in_progress' && t.due_at && new Date(t.due_at).getTime() < Date.now();
+    t.status === 'in_progress' && !awaitingConfirmation && t.due_at && new Date(t.due_at).getTime() < Date.now();
   return {
     ...t,
     duration_ms: ms,
     duration_text: ms == null ? '' : humanDuration(ms),
+    awaiting_confirmation: awaitingConfirmation,
     overdue: !!overdue,
   };
 }
@@ -167,7 +169,9 @@ router.get('/', requireLogin, (req, res) => {
   const sc = scopeClause(req.user);
   where.push(sc.sql);
   args.push(...sc.args);
-  if (status && ['in_progress', 'completed'].includes(status)) {
+  if (status === 'pending_confirmation') {
+    where.push("t.status = 'in_progress' AND t.completion_requested_at IS NOT NULL");
+  } else if (status && ['in_progress', 'completed'].includes(status)) {
     where.push('t.status = ?'); args.push(status);
   }
   if (assignee_id) { where.push('t.assignee_id = ?'); args.push(Number(assignee_id)); }
@@ -194,6 +198,7 @@ router.get('/', requireLogin, (req, res) => {
 
   const sql = `${BASE_SELECT} WHERE ${where.join(' AND ')}
     ORDER BY CASE t.status WHEN 'in_progress' THEN 0 ELSE 1 END,
+             CASE WHEN t.completion_requested_at IS NOT NULL AND t.status='in_progress' THEN 0 ELSE 1 END,
              CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
              t.created_at DESC
     LIMIT ? OFFSET ?`;
@@ -298,6 +303,52 @@ router.post('/', requireRole('admin', 'assigner'), upload.array('files', 10), (r
   res.status(201).json({ id: taskId });
 });
 
+/* ---------------- 执行者提交完成申请 ---------------- */
+
+function authorizeCompletionRequest(req, res, next) {
+  const id = Number(req.params.id);
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  if (!task) return res.status(404).json({ error: '任务不存在' });
+  if (task.assignee_id !== req.user.id || req.user.role !== 'executor') {
+    return res.status(403).json({ error: '只有任务执行人可以提交完成申请' });
+  }
+  if (task.status === 'completed') {
+    return res.status(400).json({ error: '该任务已经完成' });
+  }
+  if (task.completion_requested_at) {
+    return res.status(409).json({ error: '该任务已提交完成申请，请等待发布者确认' });
+  }
+  req.completionTask = task;
+  next();
+}
+
+router.post('/:id/completion-request', requireLogin, authorizeCompletionRequest, upload.array('files', 10), (req, res, next) => {
+  const id = req.completionTask.id;
+
+  const note = String((req.body && req.body.result_note) || '').trim();
+  const requestedAt = nowISO();
+  let attachmentCount;
+  try {
+    attachmentCount = runInTransaction(() => {
+      const count = saveAttachments(id, req.files, req.user.id, 'result');
+      const update = db.prepare(
+        "UPDATE tasks SET completion_requested_at = ?, completion_request_note = ? WHERE id = ? AND status = 'in_progress' AND completion_requested_at IS NULL"
+      ).run(requestedAt, note, id);
+      if (update.changes !== 1) {
+        const conflict = new Error('该任务状态已变化，请刷新后重试');
+        conflict.status = 409;
+        throw conflict;
+      }
+      log(id, req.user.id, 'complete_request', `提交完成申请${count ? `，成果附件 ${count} 个` : ''}`);
+      return count;
+    });
+  } catch (error) {
+    return forwardAfterUploadFailure(req, next, error);
+  }
+
+  res.json({ ok: true, attachment_count: attachmentCount, requested_at: requestedAt });
+});
+
 /* ---------------- 编辑任务 ---------------- */
 
 router.patch('/:id', requireLogin, (req, res) => {
@@ -307,9 +358,8 @@ router.patch('/:id', requireLogin, (req, res) => {
 
   const u = req.user;
   const isOwner = u.role === 'admin' || task.creator_id === u.id;
-  const isAssignee = task.assignee_id === u.id;
 
-  const { status, result_note } = req.body || {};
+  const { status } = req.body || {};
 
   /* --- 状态流转 --- */
   if (status !== undefined) {
@@ -317,24 +367,28 @@ router.patch('/:id', requireLogin, (req, res) => {
       return res.status(400).json({ error: '状态不合法' });
     }
     if (status === 'completed') {
-      if (!isAssignee && !isOwner) return res.status(403).json({ error: '只有执行人或任务创建者可以标记完成' });
+      if (!isOwner) return res.status(403).json({ error: '只有任务发布者或管理员可以确认完成' });
       if (task.status === 'completed') return res.status(400).json({ error: '该任务已完成' });
+      if (!task.completion_requested_at) return res.status(400).json({ error: '执行人尚未提交完成申请' });
       const ts = nowISO();
       db.prepare("UPDATE tasks SET status='completed', completed_at=?, result_note=? WHERE id=?")
-        .run(ts, String(result_note || '').trim(), id);
+        .run(ts, String(task.completion_request_note || '').trim(), id);
       const ms = new Date(ts).getTime() - new Date(task.created_at).getTime();
-      log(id, u.id, 'complete', `标记完成，耗时 ${humanDuration(ms)}`);
+      log(id, u.id, 'complete_confirm', `发布者确认完成，耗时 ${humanDuration(ms)}`);
       return res.json({ ok: true, duration_text: humanDuration(ms) });
     }
     // 重新打开
     if (!isOwner) return res.status(403).json({ error: '只有管理员或任务创建者可以重新开启任务' });
-    db.prepare("UPDATE tasks SET status='in_progress', completed_at=NULL WHERE id=?").run(id);
+    db.prepare(
+      "UPDATE tasks SET status='in_progress', completed_at=NULL, result_note='', completion_requested_at=NULL, completion_request_note='' WHERE id=?"
+    ).run(id);
     log(id, u.id, 'reopen', '任务被重新开启');
     return res.json({ ok: true });
   }
 
   /* --- 内容编辑 --- */
   if (!isOwner) return res.status(403).json({ error: '只有管理员或任务创建者可以修改任务内容' });
+  if (task.completion_requested_at) return res.status(409).json({ error: '任务正在等待完成确认，确认后再修改' });
 
   const { title, description, category, priority, assignee_id, due_at } = req.body || {};
   const sets = [];
@@ -380,8 +434,13 @@ function authorizeAttachmentUpload(req, res, next) {
   if (!task) return res.status(404).json({ error: '任务不存在' });
 
   const u = req.user;
-  const allowed = u.role === 'admin' || task.creator_id === u.id || task.assignee_id === u.id;
-  if (!allowed) return res.status(403).json({ error: '无权上传附件' });
+  const allowed = u.role === 'admin' || task.creator_id === u.id;
+  if (!allowed) {
+    const message = task.assignee_id === u.id && u.role === 'executor'
+      ? '请在标记完成时上传成果附件'
+      : '无权上传附件';
+    return res.status(403).json({ error: message });
+  }
 
   req.uploadTask = task;
   next();
@@ -392,13 +451,12 @@ router.post('/:id/attachments', requireLogin, authorizeAttachmentUpload, upload.
   const id = task.id;
   const u = req.user;
 
-  const kind = task.assignee_id === u.id && u.role === 'executor' ? 'result' : 'task';
   if (!req.files || !req.files.length) return res.status(400).json({ error: '未接收到文件' });
 
   let n;
   try {
     n = runInTransaction(() => {
-      const count = saveAttachments(id, req.files, u.id, kind);
+      const count = saveAttachments(id, req.files, u.id, 'task');
       log(id, u.id, 'attach', `上传了 ${count} 个附件`);
       return count;
     });

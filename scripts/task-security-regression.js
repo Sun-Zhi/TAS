@@ -215,6 +215,15 @@ async function main() {
   ok(sameSet(before, uploadNames()), '403 在落盘前拒绝且不留下文件');
 
   before = uploadNames();
+  const executorDetailUpload = await request(`/api/tasks/${taskA}/attachments`, {
+    method: 'POST',
+    token: executorA,
+    body: form({}, `${marker}_executor_detail.txt`, 'executor-detail'),
+  });
+  ok(executorDetailUpload.status === 403, '任务执行者不能从详情接口追加附件');
+  ok(sameSet(before, uploadNames()), '执行者详情上传在落盘前拒绝且不留下文件');
+
+  before = uploadNames();
   const missing = await request('/api/tasks/2147483647/attachments', {
     method: 'POST',
     token: assignerA,
@@ -222,6 +231,15 @@ async function main() {
   });
   ok(missing.status === 404, '不存在任务追加附件返回 404');
   ok(sameSet(before, uploadNames()), '404 在落盘前拒绝且不留下文件');
+
+  before = uploadNames();
+  const forbiddenCompletion = await request(`/api/tasks/${taskB}/completion-request`, {
+    method: 'POST',
+    token: executorA,
+    body: form({ result_note: '越权完成申请' }, `${marker}_forbidden_completion.txt`, 'forbidden-completion'),
+  });
+  ok(forbiddenCompletion.status === 403, '非任务执行人不能提交完成申请');
+  ok(sameSet(before, uploadNames()), '越权完成申请在落盘前拒绝且不留下文件');
 
   before = uploadNames();
   const missingTitle = await request('/api/tasks', {
@@ -335,14 +353,14 @@ async function main() {
 
   const validAppend = await request(`/api/tasks/${taskA}/attachments`, {
     method: 'POST',
-    token: executorA,
+    token: assignerA,
     body: form({}, `${marker}_valid_append.txt`, 'valid-append'),
   });
-  ok(validAppend.status === 200 && validAppend.data.count === 1, '任务执行者仍可追加结果附件');
+  ok(validAppend.status === 200 && validAppend.data.count === 1, '任务发布者仍可追加任务附件');
   const validResult = db.prepare(
     "SELECT kind FROM attachments WHERE task_id = ? AND orig_name = ?"
   ).get(taskA, `${marker}_valid_append.txt`);
-  ok(validResult && validResult.kind === 'result', '执行者附件仍标记为 result');
+  ok(validResult && validResult.kind === 'task', '发布者追加附件仍标记为 task');
 
   console.log(`\n${'='.repeat(48)}\n  通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);
   if (fail) throw new Error(`安全回归失败 ${fail} 项`);

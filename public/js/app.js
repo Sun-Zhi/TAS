@@ -604,9 +604,14 @@ async function loadStats() {
   $('#statGrid').innerHTML = `
     <div class="stat blue"><div class="k">任务总数</div><div class="v">${s.total}</div></div>
     <div class="stat orange"><div class="k">执行中</div><div class="v">${s.running}</div></div>
+    <div class="stat purple"><div class="k">待确认完成</div><div class="v">${s.pending_confirmation}</div></div>
     <div class="stat green"><div class="k">已完成</div><div class="v">${s.done}</div></div>
     <div class="stat red"><div class="k">已逾期</div><div class="v">${s.overdue}</div></div>
     <div class="stat"><div class="k">平均完成耗时</div><div class="v sm">${esc(s.avg_duration_text)}</div></div>`;
+
+  const showNotice = state.me.role !== 'executor' && s.pending_confirmation > 0;
+  $('#completionNotice').hidden = !showNotice;
+  $('#completionNoticeCount').textContent = String(s.pending_confirmation || 0);
 }
 
 async function loadTasks() {
@@ -652,16 +657,24 @@ function renderTasks() {
   const rows = list.map((t) => {
     const statusBadge = t.status === 'completed'
       ? `<span class="badge done">已完成</span>`
-      : t.overdue
+      : t.awaiting_confirmation
+        ? `<span class="badge pending"><i class="dot-live"></i>${t.creator_id === state.me.id || state.me.role === 'admin' ? '待您确认' : '待发布者确认'}</span>`
+        : t.overdue
         ? `<span class="badge overdue"><i class="dot-live"></i>已逾期</span>`
         : `<span class="badge running"><i class="dot-live"></i>执行中</span>`;
 
     const timeCell = t.status === 'completed'
       ? `<b style="color:var(--success)">${esc(t.duration_text)}</b><div class="cell-sub">${fmt(t.completed_at)} 完成</div>`
-      : `<span style="color:var(--warn)">已进行 ${elapsed(t.created_at)}</span>${t.due_at ? `<div class="cell-sub">要求 ${fmt(t.due_at)}</div>` : ''}`;
+      : t.awaiting_confirmation
+        ? `<b style="color:#c4b5fd">已提交完成申请</b><div class="cell-sub">${fmt(t.completion_requested_at)}</div>`
+        : `<span style="color:var(--warn)">已进行 ${elapsed(t.created_at)}</span>${t.due_at ? `<div class="cell-sub">要求 ${fmt(t.due_at)}</div>` : ''}`;
 
-    const canDone = t.status === 'in_progress' &&
-      (t.assignee_id === state.me.id || state.me.role === 'admin' || t.creator_id === state.me.id);
+    const canRequestDone = t.status === 'in_progress' && !t.awaiting_confirmation &&
+      t.assignee_id === state.me.id && state.me.role === 'executor';
+    const canConfirmDone = t.awaiting_confirmation &&
+      (t.creator_id === state.me.id || state.me.role === 'admin');
+    const waitingButton = t.awaiting_confirmation && t.assignee_id === state.me.id
+      ? '<button class="btn ghost sm" disabled>等待发布者确认</button>' : '';
     const delBtn = canDelete(t)
       ? `<button class="btn danger sm" onclick="delTask(${t.id},event)" title="删除此任务">删除</button>` : '';
 
@@ -683,7 +696,9 @@ function renderTasks() {
       <td>${timeCell}</td>
       <td style="white-space:nowrap">
         <button class="btn ghost sm" onclick="showDetail(${t.id})">详情</button>
-        ${canDone ? `<button class="btn success sm" onclick="markDone(${t.id})">标记完成</button>` : ''}
+        ${canRequestDone ? `<button class="btn success sm" onclick="markDone(${t.id})">标记完成</button>` : ''}
+        ${canConfirmDone ? `<button class="btn success sm" onclick="confirmCompletion(${t.id})">确认完成</button>` : ''}
+        ${waitingButton}
         ${delBtn}
       </td>
     </tr>`;
@@ -790,7 +805,9 @@ async function loadTaskDetail(id) {
 
   const statusBadge = t.status === 'completed'
     ? `<span class="badge done">已完成</span>`
-    : t.overdue ? `<span class="badge overdue">已逾期</span>` : `<span class="badge running">执行中</span>`;
+    : t.awaiting_confirmation
+      ? `<span class="badge pending">${t.creator_id === state.me.id || state.me.role === 'admin' ? '待您确认' : '待发布者确认'}</span>`
+      : t.overdue ? `<span class="badge overdue">已逾期</span>` : `<span class="badge running">执行中</span>`;
 
   const attHtml = attachments.length
     ? attachments.map((a) => `<div class="file-item">
@@ -801,7 +818,8 @@ async function loadTaskDetail(id) {
       </div>`).join('')
     : '<div class="hint">暂无附件</div>';
 
-  const canUpload = t.assignee_id === state.me.id || t.creator_id === state.me.id || state.me.role === 'admin';
+  // 执行人只在“标记完成”弹窗提交成果附件；任务详情仅供下载。
+  const canUpload = t.creator_id === state.me.id || state.me.role === 'admin';
 
   $('#dtBody').innerHTML = `
     <div class="detail-row"><div class="lb">状态</div><div class="vl">${statusBadge}
@@ -815,6 +833,9 @@ async function loadTaskDetail(id) {
       <div class="detail-row"><div class="lb">完成时间</div><div class="vl">${fmt(t.completed_at)}</div></div>
       <div class="detail-row"><div class="lb">执行耗时</div><div class="vl"><b style="color:var(--success);font-size:15px">${esc(t.duration_text)}</b></div></div>
       ${t.result_note ? `<div class="detail-row"><div class="lb">完成说明</div><div class="vl">${esc(t.result_note)}</div></div>` : ''}
+    ` : t.awaiting_confirmation ? `
+      <div class="detail-row"><div class="lb">完成申请</div><div class="vl"><b style="color:#c4b5fd">${fmt(t.completion_requested_at)} 已提交</b></div></div>
+      <div class="detail-row"><div class="lb">完成说明</div><div class="vl" style="white-space:pre-wrap">${esc(t.completion_request_note) || '<span class="hint">未填写</span>'}</div></div>
     ` : `<div class="detail-row"><div class="lb">已进行</div><div class="vl" style="color:var(--warn)">${elapsed(t.created_at)}</div></div>`}
     <div class="detail-row"><div class="lb">任务描述</div><div class="vl" style="white-space:pre-wrap">${esc(t.description) || '<span class="hint">无</span>'}</div></div>
     <div class="detail-row"><div class="lb">附件</div><div class="vl">
@@ -869,13 +890,19 @@ async function loadTaskDetail(id) {
   }
 
   const canEdit = t.creator_id === state.me.id || state.me.role === 'admin';
-  const canDone = t.status === 'in_progress' && (t.assignee_id === state.me.id || canEdit);
+  const canRequestDone = t.status === 'in_progress' && !t.awaiting_confirmation &&
+    t.assignee_id === state.me.id && state.me.role === 'executor';
+  const canConfirmDone = t.awaiting_confirmation && canEdit;
+  const waitingButton = t.awaiting_confirmation && t.assignee_id === state.me.id
+    ? '<button class="btn ghost" disabled>等待发布者确认</button>' : '';
 
   $('#dtFoot').innerHTML = `
     ${canEdit && t.status === 'completed' ? `<button class="btn ghost" onclick="reopenTask(${t.id})">重新开启</button>` : ''}
     ${canEdit ? `<button class="btn danger" onclick="removeTask(${t.id})">删除任务</button>` : ''}
-    ${canEdit && t.status === 'in_progress' ? `<button class="btn ghost" onclick="editTask(${t.id})">编辑任务</button>` : ''}
-    ${canDone ? `<button class="btn success" onclick="markDone(${t.id})">标记执行完成</button>` : ''}
+    ${canEdit && t.status === 'in_progress' && !t.awaiting_confirmation ? `<button class="btn ghost" onclick="editTask(${t.id})">编辑任务</button>` : ''}
+    ${canRequestDone ? `<button class="btn success" onclick="markDone(${t.id})">标记执行完成</button>` : ''}
+    ${canConfirmDone ? `<button class="btn success" onclick="confirmCompletion(${t.id})">确认完成</button>` : ''}
+    ${waitingButton}
     <button class="btn ghost" data-close>关闭</button>`;
 
   openModal('#detailModal');
@@ -884,6 +911,47 @@ window.showDetail = (id) => runAsync(() => loadTaskDetail(id), '任务详情加�
 
 /* ---------------- 任务操作 ---------------- */
 
+let donePendingFiles = [];
+let doneUploadController = null;
+$('#btnCancelDoneUpload').addEventListener('click', () => {
+  if (doneUploadController) doneUploadController.abort();
+});
+
+function renderDoneFiles() {
+  $('#doneFileList').innerHTML = donePendingFiles.map((file, index) => `<div class="file-item">
+    <span>📤</span><span class="fname">${esc(file.name)}</span>
+    <span class="fsize">${fileSize(file.size)}</span>
+    <button class="rm" onclick="rmDoneFile(${index})">&times;</button></div>`).join('');
+}
+
+function addDoneFiles(files) {
+  for (const file of files) {
+    if (donePendingFiles.length >= 10) { toast('最多上传 10 个成果附件', 'err'); break; }
+    if (file.size > MAX_ATTACHMENT_BYTES) { toast(`「${file.name}」超过 50MB，不能上传`, 'err'); continue; }
+    donePendingFiles.push(file);
+  }
+  renderDoneFiles();
+}
+
+window.rmDoneFile = (index) => {
+  donePendingFiles.splice(index, 1);
+  renderDoneFiles();
+};
+
+const doneDropzone = $('#doneDropzone');
+doneDropzone.addEventListener('click', () => $('#doneFiles').click());
+doneDropzone.addEventListener('dragover', (event) => { event.preventDefault(); doneDropzone.classList.add('over'); });
+doneDropzone.addEventListener('dragleave', () => doneDropzone.classList.remove('over'));
+doneDropzone.addEventListener('drop', (event) => {
+  event.preventDefault();
+  doneDropzone.classList.remove('over');
+  addDoneFiles(Array.from(event.dataTransfer.files));
+});
+$('#doneFiles').addEventListener('change', (event) => {
+  addDoneFiles(Array.from(event.target.files));
+  event.target.value = '';
+});
+
 function markDone(id) {
   const t = state.tasks.find((x) => x.id === id);
   $('#doneTaskInfo').innerHTML = t
@@ -891,6 +959,9 @@ function markDone(id) {
        <div class="cell-sub" style="margin-top:4px">执行人 ${esc(t.assignee_name)}　·　已进行 ${elapsed(t.created_at)}</div>`
     : `<b>任务 T${String(id).padStart(4, '0')}</b>`;
   $('#doneNote').value = '';
+  donePendingFiles = [];
+  renderDoneFiles();
+  $('#doneUploadStatus').hidden = true;
   $('#btnConfirmDone').dataset.taskId = id;
   openModal('#doneModal');
 }
@@ -899,19 +970,57 @@ window.markDone = markDone;
 $('#btnConfirmDone').addEventListener('click', async () => {
   const id = $('#btnConfirmDone').dataset.taskId;
   const btn = $('#btnConfirmDone');
+  const oversized = donePendingFiles.find((file) => file.size > MAX_ATTACHMENT_BYTES);
+  if (oversized) return toast(`「${oversized.name}」超过 50MB，不能上传`, 'err');
+  const formData = new FormData();
+  formData.append('result_note', $('#doneNote').value.trim());
+  donePendingFiles.forEach((file) => formData.append('files', file));
+  doneUploadController = new AbortController();
+  const originalText = btn.textContent;
   btn.disabled = true;
+  $('#doneUploadStatus').hidden = false;
+  $('#doneUploadText').textContent = '准备提交完成申请...';
+  $('#doneUploadBar').style.width = '0%';
+  $$('#doneModal [data-close]').forEach((closeButton) => { closeButton.disabled = true; });
   try {
-    const r = await api('/api/tasks/' + id, {
-      method: 'PATCH',
-      body: { status: 'completed', result_note: $('#doneNote').value.trim() },
+    await uploadForm(`/api/tasks/${id}/completion-request`, formData, {
+      signal: doneUploadController.signal,
+      onProgress: (progress) => {
+        $('#doneUploadText').textContent = uploadProgressText(progress);
+        $('#doneUploadBar').style.width = `${progress.percent}%`;
+        btn.textContent = `提交中 ${progress.percent}%`;
+      },
+      onUploaded: () => {
+        $('#doneUploadText').textContent = '材料已发送，正在提交申请...';
+        $('#doneUploadBar').style.width = '100%';
+        btn.textContent = '正在提交...';
+      },
     });
-    toast(`任务已完成，本次耗时 ${r.duration_text}`, 'ok');
+    toast('完成申请已提交，等待发布者确认', 'ok');
     closeModal('#doneModal');
     closeModal('#detailModal');
+    donePendingFiles = [];
     runAsync(() => refresh(), '任务列表刷新失败');
   } catch (e) { toast(e.message, 'err'); }
-  finally { btn.disabled = false; }
+  finally {
+    doneUploadController = null;
+    btn.disabled = false;
+    btn.textContent = originalText;
+    $('#doneUploadStatus').hidden = true;
+    $$('#doneModal [data-close]').forEach((closeButton) => { closeButton.disabled = false; });
+  }
 });
+
+async function confirmCompletion(id) {
+  if (!await askConfirm('执行人已提交完成申请。确认后任务将正式完成并记录耗时。', '确认任务完成', '确认完成')) return;
+  try {
+    const result = await api('/api/tasks/' + id, { method: 'PATCH', body: { status: 'completed' } });
+    toast(`任务已确认完成，本次耗时 ${result.duration_text}`, 'ok');
+    closeModal('#detailModal');
+    runAsync(() => refresh(), '任务列表刷新失败');
+  } catch (error) { toast(error.message, 'err'); }
+}
+window.confirmCompletion = confirmCompletion;
 
 async function reopenTask(id) {
   if (!await askConfirm('完成时间与耗时将被清空。', '重新开启任务', '确认重新开启')) return;
@@ -1087,6 +1196,13 @@ $('#statusSeg').addEventListener('click', (e) => {
   state.filters.status = b.dataset.status;
   state.selectedIds.clear();
   runAsync(() => loadTasks(), '任务筛选失败');
+});
+$('#btnShowPending').addEventListener('click', () => {
+  state.filters.status = 'pending_confirmation';
+  $$('#statusSeg button').forEach((button) => button.classList.toggle('on', button.dataset.status === 'pending_confirmation'));
+  state.selectedIds.clear();
+  runAsync(() => loadTasks(), '待确认任务加载失败');
+  $('#taskTableWrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 $('#fAssignee').addEventListener('change', (e) => { state.filters.assignee_id = e.target.value; state.selectedIds.clear(); runAsync(() => loadTasks(), '任务筛选失败'); });
 $('#fCategory').addEventListener('change', (e) => { state.filters.category = e.target.value; state.selectedIds.clear(); runAsync(() => loadTasks(), '任务筛选失败'); });

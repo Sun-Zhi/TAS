@@ -88,6 +88,16 @@ CREATE INDEX IF NOT EXISTS idx_att_task       ON attachments(task_id);
 CREATE INDEX IF NOT EXISTS idx_log_task       ON task_logs(task_id);
 `);
 
+// 兼容已部署的旧数据库：完成申请在发布者确认前仍属于执行中状态。
+const taskColumns = new Set(db.prepare('PRAGMA table_info(tasks)').all().map((column) => column.name));
+if (!taskColumns.has('completion_requested_at')) {
+  db.exec('ALTER TABLE tasks ADD COLUMN completion_requested_at TEXT');
+}
+if (!taskColumns.has('completion_request_note')) {
+  db.exec("ALTER TABLE tasks ADD COLUMN completion_request_note TEXT DEFAULT ''");
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_completion_request ON tasks(completion_requested_at);');
+
 /* ---------------- 密码哈希 ---------------- */
 
 function hashPassword(plain) {

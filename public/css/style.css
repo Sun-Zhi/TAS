@@ -332,6 +332,7 @@ textarea.input { resize: vertical; min-height: 88px; }
 .stat.green::before { background: var(--success); }
 .stat.orange::before { background: var(--warn); }
 .stat.red::before { background: var(--danger); }
+.stat.purple::before { background: #a78bfa; }
 .stat .k { color: var(--text-sub); font-size: 12.5px; margin-bottom: 6px; letter-spacing: .5px; }
 .stat .v { font-size: 27px; font-weight: 700; letter-spacing: -.5px; color: var(--text); font-variant-numeric: tabular-nums; }
 .stat .v.sm { font-size: 20px; }
@@ -339,6 +340,20 @@ textarea.input { resize: vertical; min-height: 88px; }
 .stat.green .v { color: var(--success); }
 .stat.orange .v { color: var(--warn); }
 .stat.red .v { color: var(--danger); }
+.stat.purple .v { color: #c4b5fd; }
+
+.completion-notice {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 12px 16px;
+  color: var(--text); background: rgba(167, 139, 250, .1); border: 1px solid rgba(167, 139, 250, .35);
+  border-radius: var(--radius); box-shadow: 0 8px 24px rgba(24, 14, 55, .2);
+}
+.completion-notice[hidden] { display: none; }
+.completion-notice .notice-icon {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 9px;
+  color: #0b1022; background: linear-gradient(135deg, #c4b5fd, #8b5cf6); font-weight: 800;
+}
+.completion-notice > div:nth-child(2) { flex: 1; }
+.completion-notice > div:nth-child(2) > div { margin-top: 2px; color: var(--text-sub); font-size: 12px; }
 
 /* ---------- 筛选栏 ---------- */
 .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
@@ -384,6 +399,7 @@ table.tbl tbody tr.sel:hover { background: rgba(49, 226, 242, .18); }
 .badge.running { background: rgba(61, 139, 255, .16); color: #9fc6ff; }
 .badge.done { background: var(--success-soft); color: #7df0b8; }
 .badge.overdue { background: var(--danger-soft); color: #ff9aa9; }
+.badge.pending { background: rgba(167, 139, 250, .16); color: #d8ccff; }
 .badge.gray { background: rgba(255, 255, 255, .08); color: var(--text-mute); }
 .pri { font-size: 12px; font-weight: 600; }
 .pri.urgent { color: var(--danger); }
@@ -439,6 +455,7 @@ table.tbl tbody tr.sel:hover { background: rgba(49, 226, 242, .18); }
   transition: all .15s; background: rgba(255, 255, 255, .03);
 }
 .dropzone:hover, .dropzone.over { border-color: var(--primary2); background: var(--primary-soft); color: var(--primary2); }
+.dropzone.compact { padding: 13px; }
 .file-list { margin-top: 10px; display: grid; gap: 7px; }
 .file-item {
   display: flex; align-items: center; gap: 10px; padding: 8px 12px;

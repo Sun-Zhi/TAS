@@ -147,22 +147,66 @@ async function stopServer() {
   ok(otherView.status === 403, '无关执行者无法查看他人任务详情');
 
   console.log('\n【5】执行与完成');
-  const wrongDone = await req('/api/tasks/' + taskId, { method: 'PATCH', token: dev, body: { status: 'completed' } });
-  ok(wrongDone.status === 403, '非执行人无法标记完成');
-  await new Promise((r) => setTimeout(r, 1200));
-  const done = await req('/api/tasks/' + taskId, {
-    method: 'PATCH', token: newUserToken, body: { status: 'completed', result_note: '评审结论已同步至文档' },
+  const wrongRequestForm = new FormData();
+  wrongRequestForm.append('result_note', '无关人员申请');
+  const wrongDone = await req('/api/tasks/' + taskId + '/completion-request', {
+    method: 'POST', token: dev, body: wrongRequestForm,
   });
-  ok(done.status === 200, '执行者标记完成成功', JSON.stringify(done.data));
+  ok(wrongDone.status === 403, '非执行人无法提交完成申请');
+  await new Promise((r) => setTimeout(r, 1200));
+  const executorConfirm = await req('/api/tasks/' + taskId, {
+    method: 'PATCH', token: newUserToken, body: { status: 'completed' },
+  });
+  ok(executorConfirm.status === 403, '执行者不能直接确认任务完成');
+
+  const detailUploadForm = new FormData();
+  detailUploadForm.append('files', new Blob(['错误入口附件'], { type: 'text/plain' }), '详情上传.txt');
+  const executorDetailUpload = await req('/api/tasks/' + taskId + '/attachments', {
+    method: 'POST', token: newUserToken, body: detailUploadForm,
+  });
+  ok(executorDetailUpload.status === 403, '执行者不能从任务详情追加附件');
+
+  const completionForm = new FormData();
+  completionForm.append('result_note', '评审结论已同步至文档');
+  completionForm.append('files', new Blob(['最终评审成果'], { type: 'text/plain' }), '评审成果.txt');
+  const requestDone = await req('/api/tasks/' + taskId + '/completion-request', {
+    method: 'POST', token: newUserToken, body: completionForm,
+  });
+  ok(requestDone.status === 200, '执行者提交完成申请和成果附件成功', JSON.stringify(requestDone.data));
+
+  const waiting = await req('/api/tasks/' + taskId, { token: pm });
+  ok(waiting.data.task.status === 'in_progress' && waiting.data.task.awaiting_confirmation,
+    '发布者确认前任务保持执行中并显示待确认');
+  ok(waiting.data.task.completion_request_note === '评审结论已同步至文档', '完成说明已保存');
+  ok(waiting.data.attachments.some((attachment) => attachment.orig_name === '评审成果.txt' && attachment.kind === 'result'),
+    '完成申请附件保存为成果附件');
+  const overviewWaiting = await req('/api/overview', { token: pm });
+  ok(overviewWaiting.data.pending_confirmation === 1, '发布者收到一个待确认完成通知');
+  const pendingList = await req('/api/tasks?status=pending_confirmation', { token: pm });
+  ok(pendingList.data.tasks.some((task) => task.id === taskId), '待确认筛选包含完成申请任务');
+
+  const duplicateForm = new FormData();
+  const duplicateRequest = await req('/api/tasks/' + taskId + '/completion-request', {
+    method: 'POST', token: newUserToken, body: duplicateForm,
+  });
+  ok(duplicateRequest.status === 409, '重复完成申请被拒绝');
+
+  const done = await req('/api/tasks/' + taskId, {
+    method: 'PATCH', token: pm, body: { status: 'completed' },
+  });
+  ok(done.status === 200, '任务发布者确认完成成功', JSON.stringify(done.data));
   const after = await req('/api/tasks/' + taskId, { token: pm });
   ok(after.data.task.status === 'completed', '状态变为已完成');
   ok(!!after.data.task.completed_at, '记录完成时间');
   ok(!!after.data.task.duration_text, `耗时已计算：${after.data.task.duration_text}`);
-  ok(after.data.logs.length >= 2, '操作日志已记录');
+  ok(after.data.task.result_note === '评审结论已同步至文档', '确认后完成说明写入任务结果');
+  ok(after.data.logs.length >= 3, '完成申请和确认日志已记录');
 
   const reopen = await req('/api/tasks/' + taskId, { method: 'PATCH', token: pm, body: { status: 'in_progress' } });
   ok(reopen.status === 200, '创建者可重新开启任务');
-  await req('/api/tasks/' + taskId, { method: 'PATCH', token: newUserToken, body: { status: 'completed' } });
+  const repeatForm = new FormData();
+  await req('/api/tasks/' + taskId + '/completion-request', { method: 'POST', token: newUserToken, body: repeatForm });
+  await req('/api/tasks/' + taskId, { method: 'PATCH', token: pm, body: { status: 'completed' } });
 
   console.log('\n【6】大屏与统计');
   const scr = await req('/api/screen', { token: dev });

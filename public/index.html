@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>工作台 · 任务分配系统</title>
-<link rel="stylesheet" href="/css/style.css?v=20260811-4">
+<link rel="stylesheet" href="/css/style.css?v=20260811-6">
 </head>
 <body>
 
@@ -39,12 +39,19 @@
       <button class="btn" id="btnNewTask" style="display:none">＋ 发布新任务</button>
     </div>
 
+    <div class="completion-notice" id="completionNotice" hidden>
+      <div class="notice-icon">✓</div>
+      <div><b>有 <span id="completionNoticeCount">0</span> 个任务等待确认完成</b><div>执行人已提交完成说明或成果附件，请及时确认。</div></div>
+      <button class="btn ghost sm" id="btnShowPending">立即查看</button>
+    </div>
+
     <div class="stat-grid" id="statGrid"></div>
 
     <div class="filters">
       <div class="seg" id="statusSeg">
         <button data-status="" class="on">全部</button>
         <button data-status="in_progress">执行中</button>
+        <button data-status="pending_confirmation">待确认</button>
         <button data-status="completed">已完成</button>
       </div>
       <select class="input" id="fAssignee"><option value="">全部执行者</option></select>
@@ -238,11 +245,24 @@
         <label for="doneNote">完成说明</label>
         <textarea class="input" id="doneNote" placeholder="简要说明完成情况、结果或交付物（可留空）"></textarea>
       </div>
-      <div class="hint">提交后系统将自动记录完成时间并计算本次任务的执行耗时。</div>
+      <div class="field">
+        <label for="doneFiles">成果附件</label>
+        <div class="dropzone compact" id="doneDropzone">
+          点击选择文件，或将文件拖拽到此处<br>
+          <span class="hint">单个附件不得超过 50MB，最多 10 个</span>
+        </div>
+        <input type="file" id="doneFiles" multiple hidden>
+        <div class="file-list" id="doneFileList"></div>
+      </div>
+      <div class="hint">提交后将通知任务发布者；发布者确认后，任务才会正式完成并计算耗时。</div>
     </div>
     <div class="modal-foot">
+      <div class="upload-status" id="doneUploadStatus" hidden aria-live="polite">
+        <div class="upload-status-line"><span id="doneUploadText">准备上传...</span><button type="button" class="btn ghost sm" id="btnCancelDoneUpload">取消上传</button></div>
+        <div class="upload-track"><i id="doneUploadBar"></i></div>
+      </div>
       <button class="btn ghost" data-close>取消</button>
-      <button class="btn success" id="btnConfirmDone">确认完成</button>
+      <button class="btn success" id="btnConfirmDone">提交完成申请</button>
     </div>
   </div>
 </div>
@@ -306,6 +326,6 @@
 </div>
 
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="/js/app.js?v=20260811-3"></script>
+<script src="/js/app.js?v=20260811-6"></script>
 </body>
 </html>

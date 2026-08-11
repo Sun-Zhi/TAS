@@ -44,7 +44,8 @@ app.use((err, req, res, next) => {
     return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: msg });
   }
   console.error('[error]', err);
-  res.status(500).json({ error: err.message || '服务器内部错误' });
+  const status = Number.isInteger(err.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
+  res.status(status).json({ error: err.message || '服务器内部错误' });
 });
 
 setInterval(cleanupSessions, 6 * 3600 * 1000).unref();

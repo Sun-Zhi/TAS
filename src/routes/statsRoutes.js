@@ -11,7 +11,7 @@ const { BASE_SELECT, scopeClause, decorate } = taskRoutes;
 
 const SCREEN_SELECT = `
   SELECT t.id, t.title, t.category, t.priority, t.status, t.assignee_id,
-         t.due_at, t.created_at, t.completed_at,
+         t.due_at, t.created_at, t.completed_at, t.completion_requested_at,
          au.name AS assignee_name, au.dept AS assignee_dept
   FROM tasks t JOIN users au ON au.id = t.assignee_id
 `;
@@ -32,7 +32,7 @@ router.get('/screen', requireLogin, (req, res) => {
     SELECT COUNT(*) AS total,
            SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS running,
            SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS done,
-           SUM(CASE WHEN status='in_progress' AND due_at IS NOT NULL AND due_at < ? THEN 1 ELSE 0 END) AS overdue,
+           SUM(CASE WHEN status='in_progress' AND completion_requested_at IS NULL AND due_at IS NOT NULL AND due_at < ? THEN 1 ELSE 0 END) AS overdue,
            SUM(CASE WHEN status='completed' AND completed_at >= ? THEN 1 ELSE 0 END) AS done_today,
            SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS created_today,
            AVG(CASE WHEN status='completed' AND completed_at IS NOT NULL
@@ -55,7 +55,7 @@ router.get('/screen', requireLogin, (req, res) => {
     SELECT u.id, u.name, u.dept, COUNT(t.id) AS total,
            SUM(CASE WHEN t.status='in_progress' THEN 1 ELSE 0 END) AS running,
            SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS done,
-           SUM(CASE WHEN t.status='in_progress' AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
+           SUM(CASE WHEN t.status='in_progress' AND t.completion_requested_at IS NULL AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
            AVG(CASE WHEN t.status='completed' AND t.completed_at IS NOT NULL
                     THEN (julianday(t.completed_at)-julianday(t.created_at))*86400000 END) AS avg_ms
       FROM users u JOIN tasks t ON t.assignee_id = u.id
@@ -129,8 +129,9 @@ router.get('/overview', requireLogin, (req, res) => {
   const row = db.prepare(`
     SELECT COUNT(*) AS total,
            SUM(CASE WHEN t.status='in_progress' THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN t.status='in_progress' AND t.completion_requested_at IS NOT NULL THEN 1 ELSE 0 END) AS pending_confirmation,
            SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS done,
-           SUM(CASE WHEN t.status='in_progress' AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
+           SUM(CASE WHEN t.status='in_progress' AND t.completion_requested_at IS NULL AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
            AVG(CASE WHEN t.status='completed' AND t.completed_at IS NOT NULL
                     THEN (julianday(t.completed_at)-julianday(t.created_at))*86400000 END) AS avg_ms
       FROM tasks t WHERE ${sc.sql}
@@ -138,6 +139,7 @@ router.get('/overview', requireLogin, (req, res) => {
   res.json({
     total: Number(row.total || 0),
     running: Number(row.running || 0),
+    pending_confirmation: Number(row.pending_confirmation || 0),
     done: Number(row.done || 0),
     overdue: Number(row.overdue || 0),
     avg_duration_text: durationText(row.avg_ms),
@@ -182,7 +184,7 @@ router.get('/export', requireLogin, (req, res) => {
     t.title,
     t.category,
     PRIORITY_TEXT[t.priority] || t.priority,
-    STATUS_TEXT[t.status] || t.status,
+    t.awaiting_confirmation ? '等待发布者确认' : (STATUS_TEXT[t.status] || t.status),
     t.assignee_name,
     t.assignee_username,
     t.assignee_dept || '',
