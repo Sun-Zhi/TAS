@@ -6,8 +6,8 @@ const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const ROOT = path.join(__dirname, '..');
-const DATA_DIR = path.join(ROOT, 'data');
-const UPLOAD_DIR = path.join(ROOT, 'uploads');
+const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(ROOT, 'data'));
+const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || path.join(ROOT, 'uploads'));
 
 for (const dir of [DATA_DIR, UPLOAD_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -81,6 +81,9 @@ CREATE TABLE IF NOT EXISTS task_logs (
 CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_creator  ON tasks(creator_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_created  ON tasks(created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_due      ON tasks(due_at);
 CREATE INDEX IF NOT EXISTS idx_att_task       ON attachments(task_id);
 CREATE INDEX IF NOT EXISTS idx_log_task       ON task_logs(task_id);
 `);
@@ -106,6 +109,22 @@ function verifyPassword(plain, stored) {
   }
 }
 
+function verifyPasswordAsync(plain, stored) {
+  return new Promise((resolve) => {
+    try {
+      const [algo, salt, digest] = String(stored).split('$');
+      if (algo !== 'scrypt' || !salt || !digest) return resolve(false);
+      crypto.scrypt(String(plain), salt, 64, (error, derived) => {
+        if (error) return resolve(false);
+        const expected = Buffer.from(digest, 'hex');
+        resolve(derived.length === expected.length && crypto.timingSafeEqual(derived, expected));
+      });
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 /* ---------------- 初始化种子数据 ---------------- */
 
 function nowISO() {
@@ -121,20 +140,29 @@ function seed() {
      VALUES (?, ?, ?, ?, ?, 1, ?)`
   );
   const ts = nowISO();
-  const seeds = [
-    ['admin',   'admin123', '系统管理员', 'admin',    '信息中心'],
-    ['pm01',    '123456',   '张明（产品）', 'assigner', '产品部'],
-    ['pm02',    '123456',   '李婷（运营）', 'assigner', '运营部'],
-    ['dev01',   '123456',   '王强',        'executor', '研发一组'],
-    ['dev02',   '123456',   '赵磊',        'executor', '研发二组'],
-    ['ops01',   '123456',   '陈静',        'executor', '交付部'],
-  ];
+  const configuredAdminPassword = process.env.ADMIN_PASSWORD;
+  const adminPassword = configuredAdminPassword || crypto.randomBytes(24).toString('base64url');
+  const seeds = [['admin', adminPassword, '系统管理员', 'admin', '信息中心']];
+  if (/^(1|true|yes)$/i.test(process.env.ENABLE_DEMO_ACCOUNTS || '')) {
+    seeds.push(
+      ['pm01',  '123456', '张明（产品）', 'assigner', '产品部'],
+      ['pm02',  '123456', '李婷（运营）', 'assigner', '运营部'],
+      ['dev01', '123456', '王强',        'executor', '研发一组'],
+      ['dev02', '123456', '赵磊',        'executor', '研发二组'],
+      ['ops01', '123456', '陈静',        'executor', '交付部']
+    );
+  }
   for (const [username, pwd, name, role, dept] of seeds) {
     insert.run(username, hashPassword(pwd), name, role, dept, ts);
   }
-  console.log('[db] 已初始化默认账号：admin/admin123，pm01/123456，dev01/123456 ...');
+  if (configuredAdminPassword) {
+    console.log('[db] 已使用 ADMIN_PASSWORD 初始化管理员账号 admin');
+  } else {
+    console.warn(`[db] 已初始化管理员账号 admin；本次生成的随机密码：${adminPassword}`);
+  }
+  if (seeds.length > 1) console.warn('[db] 已显式启用演示账号（固定演示口令仅适用于本地演示）');
 }
 
 seed();
 
-module.exports = { db, hashPassword, verifyPassword, nowISO, UPLOAD_DIR, DATA_DIR, ROOT };
+module.exports = { db, hashPassword, verifyPassword, verifyPasswordAsync, nowISO, UPLOAD_DIR, DATA_DIR, ROOT };

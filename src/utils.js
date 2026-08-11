@@ -28,7 +28,9 @@ const CSV_HEADERS = [
 ];
 
 function csvEscape(value) {
-  const s = value == null ? '' : String(value);
+  let s = value == null ? '' : String(value);
+  // 防止 Excel/WPS 将用户输入解释为公式（CSV Injection）。
+  if (/^\s*[=+\-@]/.test(s) || /^[\t\r]/.test(s)) s = `'${s}`;
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }

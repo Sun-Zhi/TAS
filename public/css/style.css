@@ -190,9 +190,13 @@ textarea.input { resize: vertical; min-height: 88px; }
   height: 34px; border-radius: 8px; border: 1px solid transparent;
   display: flex; align-items: center; justify-content: center; cursor: pointer;
   font-size: 13px; color: var(--text); background: rgba(255,255,255,.03);
+  padding: 0; margin: 0; font-family: inherit;
   transition: background .12s, border-color .12s, color .12s;
 }
 .dp-day:hover { background: rgba(49, 226, 242, .12); border-color: rgba(49, 226, 242, .35); }
+.dp-day:focus-visible, .dp-nav:focus-visible, .dp-btn:focus-visible {
+  outline: 2px solid var(--primary2); outline-offset: 2px;
+}
 .dp-day.today { border-color: var(--primary2); color: var(--primary2); }
 .dp-day.selected {
   background: linear-gradient(135deg, var(--primary), var(--primary-dark));

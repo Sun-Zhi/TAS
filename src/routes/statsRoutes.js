@@ -9,94 +9,112 @@ const taskRoutes = require('./taskRoutes');
 const router = express.Router();
 const { BASE_SELECT, scopeClause, decorate } = taskRoutes;
 
+const SCREEN_SELECT = `
+  SELECT t.id, t.title, t.category, t.priority, t.status, t.assignee_id,
+         t.due_at, t.created_at, t.completed_at,
+         au.name AS assignee_name, au.dept AS assignee_dept
+  FROM tasks t JOIN users au ON au.id = t.assignee_id
+`;
+
+function durationText(ms) {
+  return ms == null ? '-' : humanDuration(Math.max(0, Number(ms)));
+}
+
 /* ---------------- 大屏数据 ---------------- */
 
 router.get('/screen', requireLogin, (req, res) => {
-  const all = db.prepare(`${BASE_SELECT} ORDER BY t.created_at DESC`).all().map(decorate);
-
-  const running = all.filter((t) => t.status === 'in_progress');
-  const done = all.filter((t) => t.status === 'completed');
-
-  const durations = done.map((t) => t.duration_ms).filter((n) => n != null);
-  const avg = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
-  const fastest = durations.length ? Math.min(...durations) : null;
-
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const doneToday = done.filter((t) => new Date(t.completed_at) >= today).length;
-  const createdToday = all.filter((t) => new Date(t.created_at) >= today).length;
+  const todayISO = today.toISOString();
+  const now = new Date().toISOString();
+
+  const summaryRow = db.prepare(`
+    SELECT COUNT(*) AS total,
+           SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS done,
+           SUM(CASE WHEN status='in_progress' AND due_at IS NOT NULL AND due_at < ? THEN 1 ELSE 0 END) AS overdue,
+           SUM(CASE WHEN status='completed' AND completed_at >= ? THEN 1 ELSE 0 END) AS done_today,
+           SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS created_today,
+           AVG(CASE WHEN status='completed' AND completed_at IS NOT NULL
+                    THEN (julianday(completed_at)-julianday(created_at))*86400000 END) AS avg_ms,
+           MIN(CASE WHEN status='completed' AND completed_at IS NOT NULL
+                    THEN (julianday(completed_at)-julianday(created_at))*86400000 END) AS fastest_ms
+      FROM tasks
+  `).get(now, todayISO, todayISO);
+
+  const running = db.prepare(`${SCREEN_SELECT}
+    WHERE t.status='in_progress'
+    ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+             t.created_at DESC LIMIT 60`).all().map(decorate);
+  const done = db.prepare(`${SCREEN_SELECT}
+    WHERE t.status='completed'
+    ORDER BY t.completed_at DESC LIMIT 60`).all().map(decorate);
 
   // 执行者维度统计
-  const byExecutor = {};
-  for (const t of all) {
-    const k = t.assignee_id;
-    if (!byExecutor[k]) {
-      byExecutor[k] = {
-        id: k, name: t.assignee_name, dept: t.assignee_dept || '',
-        total: 0, running: 0, done: 0, overdue: 0, durations: [],
-      };
-    }
-    const e = byExecutor[k];
-    e.total++;
-    if (t.status === 'completed') { e.done++; if (t.duration_ms != null) e.durations.push(t.duration_ms); }
-    else { e.running++; if (t.overdue) e.overdue++; }
-  }
-  const executors = Object.values(byExecutor)
-    .map((e) => {
-      const avgMs = e.durations.length ? e.durations.reduce((a, b) => a + b, 0) / e.durations.length : null;
-      return {
-        id: e.id, name: e.name, dept: e.dept, total: e.total, running: e.running,
-        done: e.done, overdue: e.overdue,
-        rate: e.total ? Math.round((e.done / e.total) * 100) : 0,
-        avg_duration_text: avgMs == null ? '-' : humanDuration(avgMs),
-      };
-    })
-    .sort((a, b) => b.total - a.total || b.done - a.done);
+  const executors = db.prepare(`
+    SELECT u.id, u.name, u.dept, COUNT(t.id) AS total,
+           SUM(CASE WHEN t.status='in_progress' THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS done,
+           SUM(CASE WHEN t.status='in_progress' AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
+           AVG(CASE WHEN t.status='completed' AND t.completed_at IS NOT NULL
+                    THEN (julianday(t.completed_at)-julianday(t.created_at))*86400000 END) AS avg_ms
+      FROM users u JOIN tasks t ON t.assignee_id = u.id
+     GROUP BY u.id, u.name, u.dept
+     ORDER BY total DESC, done DESC
+  `).all(now).map((e) => ({
+    id: e.id, name: e.name, dept: e.dept || '', total: Number(e.total),
+    running: Number(e.running), done: Number(e.done), overdue: Number(e.overdue),
+    rate: e.total ? Math.round((Number(e.done) / Number(e.total)) * 100) : 0,
+    avg_duration_text: durationText(e.avg_ms),
+  }));
 
   // 类别分布
-  const catMap = {};
-  for (const t of all) {
-    catMap[t.category] = catMap[t.category] || { category: t.category, total: 0, done: 0 };
-    catMap[t.category].total++;
-    if (t.status === 'completed') catMap[t.category].done++;
-  }
-  const categories = Object.values(catMap).sort((a, b) => b.total - a.total);
+  const categories = db.prepare(`
+    SELECT COALESCE(NULLIF(category, ''), '常规任务') AS category,
+           COUNT(*) AS total,
+           SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS done
+      FROM tasks GROUP BY COALESCE(NULLIF(category, ''), '常规任务')
+     ORDER BY total DESC
+  `).all().map((c) => ({ category: c.category, total: Number(c.total), done: Number(c.done) }));
 
   // 近 7 天完成趋势
-  const trend = [];
+  const dayRanges = [];
   for (let i = 6; i >= 0; i--) {
     const day = new Date();
     day.setHours(0, 0, 0, 0);
     day.setDate(day.getDate() - i);
-    const next = new Date(day.getTime() + 86400_000);
-    trend.push({
-      date: `${day.getMonth() + 1}/${day.getDate()}`,
-      done: done.filter((t) => {
-        const d = new Date(t.completed_at);
-        return d >= day && d < next;
-      }).length,
-      created: all.filter((t) => {
-        const d = new Date(t.created_at);
-        return d >= day && d < next;
-      }).length,
-    });
+    const next = new Date(day);
+    next.setDate(next.getDate() + 1);
+    dayRanges.push({ day, next });
   }
+  const since = dayRanges[0].day.toISOString();
+  const recent = db.prepare(
+    'SELECT created_at, completed_at FROM tasks WHERE created_at >= ? OR completed_at >= ?'
+  ).all(since, since);
+  const trend = dayRanges.map(({ day, next }) => ({
+    date: `${day.getMonth() + 1}/${day.getDate()}`,
+    done: recent.filter((t) => t.completed_at && new Date(t.completed_at) >= day && new Date(t.completed_at) < next).length,
+    created: recent.filter((t) => new Date(t.created_at) >= day && new Date(t.created_at) < next).length,
+  }));
+
+  const total = Number(summaryRow.total || 0);
+  const doneCount = Number(summaryRow.done || 0);
 
   res.json({
     updated_at: new Date().toISOString(),
     summary: {
-      total: all.length,
-      running: running.length,
-      done: done.length,
-      overdue: running.filter((t) => t.overdue).length,
-      done_today: doneToday,
-      created_today: createdToday,
-      complete_rate: all.length ? Math.round((done.length / all.length) * 100) : 0,
-      avg_duration_text: avg == null ? '-' : humanDuration(avg),
-      fastest_duration_text: fastest == null ? '-' : humanDuration(fastest),
+      total,
+      running: Number(summaryRow.running || 0),
+      done: doneCount,
+      overdue: Number(summaryRow.overdue || 0),
+      done_today: Number(summaryRow.done_today || 0),
+      created_today: Number(summaryRow.created_today || 0),
+      complete_rate: total ? Math.round((doneCount / total) * 100) : 0,
+      avg_duration_text: durationText(summaryRow.avg_ms),
+      fastest_duration_text: durationText(summaryRow.fastest_ms),
     },
-    running: running.slice(0, 60),
-    done: done.sort((a, b) => new Date(b.completed_at) - new Date(a.completed_at)).slice(0, 60),
+    running,
+    done,
     executors,
     categories,
     trend,
@@ -107,16 +125,22 @@ router.get('/screen', requireLogin, (req, res) => {
 
 router.get('/overview', requireLogin, (req, res) => {
   const sc = scopeClause(req.user);
-  const rows = db.prepare(`${BASE_SELECT} WHERE ${sc.sql}`).all(...sc.args).map(decorate);
-  const done = rows.filter((t) => t.status === 'completed');
-  const durations = done.map((t) => t.duration_ms).filter((n) => n != null);
-  const avg = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
+  const now = new Date().toISOString();
+  const row = db.prepare(`
+    SELECT COUNT(*) AS total,
+           SUM(CASE WHEN t.status='in_progress' THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS done,
+           SUM(CASE WHEN t.status='in_progress' AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
+           AVG(CASE WHEN t.status='completed' AND t.completed_at IS NOT NULL
+                    THEN (julianday(t.completed_at)-julianday(t.created_at))*86400000 END) AS avg_ms
+      FROM tasks t WHERE ${sc.sql}
+  `).get(now, ...sc.args);
   res.json({
-    total: rows.length,
-    running: rows.filter((t) => t.status === 'in_progress').length,
-    done: done.length,
-    overdue: rows.filter((t) => t.overdue).length,
-    avg_duration_text: avg == null ? '-' : humanDuration(avg),
+    total: Number(row.total || 0),
+    running: Number(row.running || 0),
+    done: Number(row.done || 0),
+    overdue: Number(row.overdue || 0),
+    avg_duration_text: durationText(row.avg_ms),
   });
 });
 

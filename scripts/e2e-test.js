@@ -1,6 +1,15 @@
 /* 端到端自测：node scripts/e2e-test.js */
 'use strict';
-const BASE = 'http://localhost:3000';
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
+
+const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'taskassign-e2e-'));
+const PORT = 32000 + (process.pid % 1000);
+const BASE = `http://127.0.0.1:${PORT}`;
+let server;
+let serverOutput = '';
 let pass = 0, fail = 0;
 
 function ok(cond, label, extra = '') {
@@ -28,7 +37,45 @@ async function login(username, password) {
   return r.data.token;
 }
 
+async function startServer() {
+  server = spawn(process.execPath, ['server.js'], {
+    cwd: path.join(__dirname, '..'),
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1',
+      PORT: String(PORT),
+      DATA_DIR: path.join(TEST_ROOT, 'data'),
+      UPLOAD_DIR: path.join(TEST_ROOT, 'uploads'),
+      ADMIN_PASSWORD: 'admin123',
+      ENABLE_DEMO_ACCOUNTS: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  server.stdout.on('data', (chunk) => { serverOutput += chunk; });
+  server.stderr.on('data', (chunk) => { serverOutput += chunk; });
+  for (let i = 0; i < 60; i++) {
+    if (server.exitCode !== null) throw new Error(`测试服务提前退出\n${serverOutput}`);
+    try {
+      const response = await fetch(`${BASE}/index.html`);
+      if (response.ok) return;
+    } catch {
+      // 服务尚未启动。
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`测试服务启动超时\n${serverOutput}`);
+}
+
+async function stopServer() {
+  if (server && server.exitCode === null) {
+    server.kill();
+    await new Promise((resolve) => server.once('exit', resolve));
+  }
+  fs.rmSync(TEST_ROOT, { recursive: true, force: true });
+}
+
 (async () => {
+  await startServer();
   console.log('\n【1】登录与鉴权');
   const admin = await login('admin', 'admin123');
   const pm = await login('pm01', '123456');
@@ -36,6 +83,13 @@ async function login(username, password) {
   ok(admin && pm && dev, '三种角色均可登录');
   const bad = await req('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } });
   ok(bad.status === 401, '错误密码被拒绝');
+  let limited;
+  for (let i = 0; i < 6; i++) {
+    limited = await req('/api/auth/login', {
+      method: 'POST', body: { username: 'rate-limit-probe', password: 'wrong' },
+    });
+  }
+  ok(limited.status === 429, '连续登录失败触发 429 限流');
   ok((await req('/api/tasks')).status === 401, '未登录访问受保护接口返回 401');
 
   console.log('\n【2】管理员创建用户');
@@ -134,7 +188,16 @@ async function login(username, password) {
   console.log('\n【8】清理校验');
   const delUser = await req('/api/users/' + newUserId, { method: 'DELETE', token: admin });
   ok(delUser.status === 400, '有关联任务的用户不允许删除（提示改为停用）');
+  const resetPassword = await req('/api/users/' + newUserId, {
+    method: 'PATCH', token: admin, body: { password: 'changed-password' },
+  });
+  ok(resetPassword.status === 200, '管理员可重置用户密码');
+  ok((await req('/api/tasks', { token: newUserToken })).status === 401, '密码重置后旧会话立即失效');
 
   console.log(`\n${'='.repeat(46)}\n  通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(46)}\n`);
-  process.exit(fail ? 1 : 0);
-})().catch((e) => { console.error('测试异常:', e); process.exit(1); });
+  if (fail) process.exitCode = 1;
+})().catch((e) => {
+  console.error('测试异常:', e);
+  if (serverOutput) console.error(serverOutput);
+  process.exitCode = 1;
+}).finally(stopServer);

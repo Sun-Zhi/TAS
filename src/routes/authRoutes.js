@@ -1,21 +1,47 @@
 'use strict';
 
 const express = require('express');
-const { db, verifyPassword, hashPassword } = require('../db');
+const { db, verifyPassword, verifyPasswordAsync, hashPassword } = require('../db');
 const auth = require('../auth');
 
 const router = express.Router();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 5;
+const loginFailures = new Map();
 
-router.post('/login', (req, res) => {
+function loginKey(req, username) {
+  return `${req.ip || req.socket.remoteAddress || 'unknown'}:${String(username || '').trim().toLowerCase()}`;
+}
+
+function failureState(key) {
+  const now = Date.now();
+  const state = loginFailures.get(key);
+  if (!state || now - state.firstAt >= LOGIN_WINDOW_MS) {
+    const fresh = { count: 0, firstAt: now };
+    loginFailures.set(key, fresh);
+    return fresh;
+  }
+  return state;
+}
+
+router.post('/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: '请输入账号和密码' });
 
+  const key = loginKey(req, username);
+  const state = failureState(key);
+  if (state.count >= LOGIN_MAX_FAILURES) {
+    return res.status(429).json({ error: '登录失败次数过多，请 15 分钟后再试' });
+  }
+
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username).trim());
-  if (!user || !verifyPassword(password, user.password)) {
+  if (!user || !(await verifyPasswordAsync(password, user.password))) {
+    state.count += 1;
     return res.status(401).json({ error: '账号或密码错误' });
   }
   if (user.active !== 1) return res.status(403).json({ error: '该账号已被停用，请联系管理员' });
 
+  loginFailures.delete(key);
   auth.cleanupSessions();
   const { token, expires } = auth.createSession(user.id);
   auth.setAuthCookie(res, token, expires);
@@ -47,7 +73,9 @@ router.post('/password', auth.requireLogin, (req, res) => {
     return res.status(400).json({ error: '原密码不正确' });
   }
   db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashPassword(newPassword), req.user.id);
-  res.json({ ok: true });
+  auth.destroyUserSessions(req.user.id);
+  auth.clearAuthCookie(res);
+  res.json({ ok: true, relogin: true });
 });
 
 module.exports = router;

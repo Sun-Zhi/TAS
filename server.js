@@ -8,6 +8,16 @@ const { attachUser, cleanupSessions } = require('./src/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// 默认监听所有网卡，便于同一局域网内访问；可用 HOST 环境变量收窄。
+const HOST = process.env.HOST || '0.0.0.0';
+
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  next();
+});
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -39,11 +49,10 @@ app.use((err, req, res, next) => {
 
 setInterval(cleanupSessions, 6 * 3600 * 1000).unref();
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log('');
   console.log('  任务分配系统已启动');
-  console.log(`  工作台：http://localhost:${PORT}/index.html`);
-  console.log(`  大屏：  http://localhost:${PORT}/screen.html`);
-  console.log('  默认账号：admin / admin123');
+  console.log(`  工作台：http://${HOST}:${PORT}/index.html`);
+  console.log(`  大屏：  http://${HOST}:${PORT}/screen.html`);
   console.log('');
 });

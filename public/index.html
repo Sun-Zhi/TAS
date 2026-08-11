@@ -79,36 +79,36 @@
 </div>
 
 <!-- ============ 任务表单弹窗 ============ -->
-<div class="modal-mask" id="taskModal">
-  <div class="modal wide">
+<div class="modal-mask" id="taskModal" aria-hidden="true">
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="taskModalTitle">
     <div class="modal-head">
       <h3 id="taskModalTitle">发布新任务</h3>
-      <button class="x" data-close>&times;</button>
+      <button class="x" data-close aria-label="关闭">&times;</button>
     </div>
     <div class="modal-body">
       <form id="taskForm">
         <input type="hidden" id="tfId">
         <div class="field">
-          <label>任务标题 <span class="req">*</span></label>
+          <label for="tfTitle">任务标题 <span class="req">*</span></label>
           <input class="input" id="tfTitle" placeholder="简要描述任务目标" required>
         </div>
         <div class="field">
-          <label>任务描述</label>
+          <label for="tfDesc">任务描述</label>
           <textarea class="input" id="tfDesc" placeholder="详细说明任务内容、验收标准等"></textarea>
         </div>
         <div class="grid2">
           <div class="field">
-            <label>执行人 <span class="req">*</span></label>
+            <label for="tfAssignee">执行人 <span class="req">*</span></label>
             <select class="input" id="tfAssignee" required></select>
             <div class="hint">保存后任务自动派发给该执行者</div>
           </div>
           <div class="field">
-            <label>任务类别</label>
+            <label for="tfCategory">任务类别</label>
             <input class="input" id="tfCategory" list="catList" placeholder="如：需求开发 / 线上问题">
             <datalist id="catList"></datalist>
           </div>
           <div class="field">
-            <label>优先级</label>
+            <label for="tfPriority">优先级</label>
             <select class="input" id="tfPriority">
               <option value="low">低</option>
               <option value="normal" selected>普通</option>
@@ -117,19 +117,19 @@
             </select>
           </div>
           <div class="field">
-            <label>要求完成时间</label>
+            <label for="tfDueDisplay">要求完成时间</label>
             <div class="datetime-picker-wrap" id="tfDueWrap">
               <input class="input datetime-input" id="tfDueDisplay" readonly placeholder="点击选择截止时间"
                 aria-haspopup="dialog" aria-expanded="false" aria-controls="tfDuePicker">
               <input type="hidden" id="tfDue">
-              <div class="datetime-picker" id="tfDuePicker" role="dialog" aria-label="选择要求完成时间">
+              <div class="datetime-picker" id="tfDuePicker" role="dialog" aria-modal="false" aria-labelledby="dpTitle" aria-hidden="true" tabindex="-1">
                 <div class="dp-header">
                   <button type="button" class="dp-nav" data-dp="prev" aria-label="上个月">‹</button>
-                  <span class="dp-title" id="dpTitle">2026年08月</span>
+                  <span class="dp-title" id="dpTitle" aria-live="polite">2026年08月</span>
                   <button type="button" class="dp-nav" data-dp="next" aria-label="下个月">›</button>
                 </div>
                 <div class="dp-weekdays"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
-                <div class="dp-days" id="dpDays"></div>
+                <div class="dp-days" id="dpDays" role="grid" aria-label="日期"></div>
                 <div class="dp-time">
                   <span>时间</span>
                   <select id="dpHour" aria-label="小时"></select>
@@ -146,7 +146,7 @@
           </div>
         </div>
         <div class="field" id="tfFileField">
-          <label>附件</label>
+          <label for="tfFiles">附件</label>
           <div class="dropzone" id="dropzone">
             点击选择文件，或将文件拖拽到此处<br>
             <span class="hint">单个不超过 50MB，最多 10 个</span>
@@ -164,11 +164,11 @@
 </div>
 
 <!-- ============ 任务详情弹窗 ============ -->
-<div class="modal-mask" id="detailModal">
-  <div class="modal wide">
+<div class="modal-mask" id="detailModal" aria-hidden="true">
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="dtTitle">
     <div class="modal-head">
       <h3 id="dtTitle">任务详情</h3>
-      <button class="x" data-close>&times;</button>
+      <button class="x" data-close aria-label="关闭">&times;</button>
     </div>
     <div class="modal-body" id="dtBody"></div>
     <div class="modal-foot" id="dtFoot"></div>
@@ -176,26 +176,26 @@
 </div>
 
 <!-- ============ 用户表单弹窗 ============ -->
-<div class="modal-mask" id="userModal">
-  <div class="modal">
+<div class="modal-mask" id="userModal" aria-hidden="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="userModalTitle">
     <div class="modal-head">
       <h3 id="userModalTitle">新建用户</h3>
-      <button class="x" data-close>&times;</button>
+      <button class="x" data-close aria-label="关闭">&times;</button>
     </div>
     <div class="modal-body">
       <form id="userForm">
         <input type="hidden" id="ufId">
         <div class="grid2">
           <div class="field">
-            <label>登录账号 <span class="req">*</span></label>
+            <label for="ufUsername">登录账号 <span class="req">*</span></label>
             <input class="input" id="ufUsername" placeholder="英文/数字" required>
           </div>
           <div class="field">
-            <label>姓名 <span class="req">*</span></label>
+            <label for="ufName">姓名 <span class="req">*</span></label>
             <input class="input" id="ufName" required>
           </div>
           <div class="field">
-            <label>角色 <span class="req">*</span></label>
+            <label for="ufRole">角色 <span class="req">*</span></label>
             <select class="input" id="ufRole">
               <option value="executor">任务执行者</option>
               <option value="assigner">任务分配者</option>
@@ -203,12 +203,12 @@
             </select>
           </div>
           <div class="field">
-            <label>部门</label>
+            <label for="ufDept">部门</label>
             <input class="input" id="ufDept" placeholder="选填">
           </div>
         </div>
         <div class="field">
-          <label>密码 <span class="req" id="ufPwdReq">*</span></label>
+          <label for="ufPassword">密码 <span class="req" id="ufPwdReq">*</span></label>
           <input class="input" id="ufPassword" type="text" placeholder="至少 6 位">
           <div class="hint" id="ufPwdHint">编辑时留空表示不修改密码</div>
         </div>
@@ -222,13 +222,13 @@
 </div>
 
 <!-- ============ 完成任务弹窗 ============ -->
-<div class="modal-mask" id="doneModal">
-  <div class="modal" style="max-width:480px">
-    <div class="modal-head"><h3>标记任务执行完成</h3><button class="x" data-close>&times;</button></div>
+<div class="modal-mask" id="doneModal" aria-hidden="true">
+  <div class="modal" style="max-width:480px" role="dialog" aria-modal="true" aria-labelledby="doneModalTitle">
+    <div class="modal-head"><h3 id="doneModalTitle">标记任务执行完成</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
       <div id="doneTaskInfo" style="margin-bottom:14px;padding:12px 14px;background:#f7f9fc;border-radius:8px"></div>
       <div class="field">
-        <label>完成说明</label>
+        <label for="doneNote">完成说明</label>
         <textarea class="input" id="doneNote" placeholder="简要说明完成情况、结果或交付物（可留空）"></textarea>
       </div>
       <div class="hint">提交后系统将自动记录完成时间并计算本次任务的执行耗时。</div>
@@ -241,12 +241,12 @@
 </div>
 
 <!-- ============ 改密码弹窗 ============ -->
-<div class="modal-mask" id="pwdModal">
-  <div class="modal" style="max-width:420px">
-    <div class="modal-head"><h3>修改密码</h3><button class="x" data-close>&times;</button></div>
+<div class="modal-mask" id="pwdModal" aria-hidden="true">
+  <div class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="pwdModalTitle">
+    <div class="modal-head"><h3 id="pwdModalTitle">修改密码</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
-      <div class="field"><label>原密码</label><input class="input" id="pwOld" type="password"></div>
-      <div class="field"><label>新密码</label><input class="input" id="pwNew" type="password" placeholder="至少 6 位"></div>
+      <div class="field"><label for="pwOld">原密码</label><input class="input" id="pwOld" type="password"></div>
+      <div class="field"><label for="pwNew">新密码</label><input class="input" id="pwNew" type="password" placeholder="至少 6 位"></div>
     </div>
     <div class="modal-foot">
       <button class="btn ghost" data-close>取消</button>
@@ -256,17 +256,17 @@
 </div>
 
 <!-- ============ 导出弹窗 ============ -->
-<div class="modal-mask" id="exportModal">
-  <div class="modal" style="max-width:460px">
-    <div class="modal-head"><h3>导出任务清单</h3><button class="x" data-close>&times;</button></div>
+<div class="modal-mask" id="exportModal" aria-hidden="true">
+  <div class="modal" style="max-width:460px" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
+    <div class="modal-head"><h3 id="exportModalTitle">导出任务清单</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
       <div class="field">
-        <label>按执行者导出</label>
+        <label for="exAssignee">按执行者导出</label>
         <select class="input" id="exAssignee"><option value="">全部执行者</option></select>
         <div class="hint">导出该执行者名下所有任务，含任务类别、状态与耗时</div>
       </div>
       <div class="field">
-        <label>任务状态</label>
+        <label for="exStatus">任务状态</label>
         <select class="input" id="exStatus">
           <option value="">全部状态</option>
           <option value="in_progress">仅执行中</option>
@@ -281,7 +281,7 @@
   </div>
 </div>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 <script src="/js/app.js"></script>
 </body>
 </html>

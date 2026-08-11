@@ -11,6 +11,7 @@ const STATUS_TEXT = { in_progress: '执行中', completed: '已完成' };
 const state = {
   me: null,
   tasks: [],
+  taskTotal: 0,
   executors: [],
   users: [],
   filters: { status: '', assignee_id: '', category: '', q: '' },
@@ -26,6 +27,15 @@ function toast(msg, type) {
   t.className = 'show ' + (type || '');
   clearTimeout(t._timer);
   t._timer = setTimeout(() => (t.className = ''), 2800);
+}
+
+function runAsync(action, fallbackMessage = '操作失败，请稍后重试') {
+  return Promise.resolve()
+    .then(action)
+    .catch((error) => {
+      console.error(error);
+      toast(error && error.message ? error.message : fallbackMessage, 'err');
+    });
 }
 
 function esc(s) {
@@ -71,8 +81,33 @@ async function api(url, options = {}) {
 }
 
 /* ---------------- 自定义日期时间选择器 ---------------- */
-const duePicker = { open: false, view: new Date(), selected: null, hour: '09', minute: '00' };
+const duePicker = { open: false, view: new Date(), selected: null, focused: null, hour: '09', minute: '00' };
 function pad2(n) { return String(n).padStart(2, '0'); }
+
+function dateAtMidnight(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function sameDate(a, b) {
+  return Boolean(a && b) && a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function changeDuePickerMonth(delta) {
+  const y = duePicker.view.getFullYear();
+  const m = duePicker.view.getMonth();
+  const focusDay = duePicker.focused ? duePicker.focused.getDate() : 1;
+  // 先落到目标月 1 日，避免 29-31 日调用 setMonth 时溢出到下下个月。
+  const target = new Date(y, m + delta, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  duePicker.view = target;
+  duePicker.focused = new Date(target.getFullYear(), target.getMonth(), Math.min(focusDay, lastDay));
+}
+
+function focusDueDay() {
+  const day = $('#dpDays .dp-day[tabindex="0"]');
+  if (day) day.focus();
+}
 
 function initDuePicker() {
   const display = $('#tfDueDisplay');
@@ -98,6 +133,15 @@ function initDuePicker() {
     }
   });
   picker.addEventListener('click', (e) => e.stopPropagation());
+  picker.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const focusable = Array.from(picker.querySelectorAll('button:not([disabled]):not([tabindex="-1"]), select:not([disabled])'))
+      .filter((el) => el.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
   document.addEventListener('click', () => closeDuePicker());
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && duePicker.open) {
@@ -110,14 +154,45 @@ function initDuePicker() {
 
   $('#dpDays').addEventListener('click', (e) => {
     const cell = e.target.closest('.dp-day');
-    if (!cell || cell.classList.contains('empty')) return;
+    if (!cell) return;
     duePicker.selected = new Date(duePicker.view.getFullYear(), duePicker.view.getMonth(), Number(cell.dataset.day));
-    renderDuePicker();
+    duePicker.focused = dateAtMidnight(duePicker.selected);
+    renderDuePicker(true);
+  });
+
+  $('#dpDays').addEventListener('focusin', (e) => {
+    const cell = e.target.closest('.dp-day');
+    if (cell) duePicker.focused = new Date(duePicker.view.getFullYear(), duePicker.view.getMonth(), Number(cell.dataset.day));
+  });
+
+  $('#dpDays').addEventListener('keydown', (e) => {
+    const cell = e.target.closest('.dp-day');
+    if (!cell) return;
+    const current = new Date(duePicker.view.getFullYear(), duePicker.view.getMonth(), Number(cell.dataset.day));
+    let next = null;
+    if (e.key === 'ArrowLeft') next = new Date(current.getFullYear(), current.getMonth(), current.getDate() - 1);
+    else if (e.key === 'ArrowRight') next = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1);
+    else if (e.key === 'ArrowUp') next = new Date(current.getFullYear(), current.getMonth(), current.getDate() - 7);
+    else if (e.key === 'ArrowDown') next = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 7);
+    else if (e.key === 'Home') next = new Date(current.getFullYear(), current.getMonth(), current.getDate() - current.getDay());
+    else if (e.key === 'End') next = new Date(current.getFullYear(), current.getMonth(), current.getDate() + (6 - current.getDay()));
+    else if (e.key === 'PageUp' || e.key === 'PageDown') {
+      duePicker.focused = current;
+      changeDuePickerMonth((e.key === 'PageUp' ? -1 : 1) * (e.shiftKey ? 12 : 1));
+      e.preventDefault();
+      renderDuePicker(true);
+      return;
+    }
+    if (!next) return;
+    e.preventDefault();
+    duePicker.focused = next;
+    duePicker.view = new Date(next.getFullYear(), next.getMonth(), 1);
+    renderDuePicker(true);
   });
 
   $$('#tfDuePicker .dp-nav').forEach((btn) => {
     btn.addEventListener('click', () => {
-      duePicker.view.setMonth(duePicker.view.getMonth() + (btn.dataset.dp === 'prev' ? -1 : 1));
+      changeDuePickerMonth(btn.dataset.dp === 'prev' ? -1 : 1);
       renderDuePicker();
     });
   });
@@ -132,16 +207,17 @@ function initDuePicker() {
     if (action === 'today') {
       const now = new Date();
       duePicker.selected = now;
-      duePicker.view = new Date(now);
+      duePicker.focused = dateAtMidnight(now);
+      duePicker.view = new Date(now.getFullYear(), now.getMonth(), 1);
       duePicker.hour = pad2(now.getHours());
       duePicker.minute = pad2(Math.floor(now.getMinutes() / 5) * 5);
       syncDueTimeInputs();
       renderDuePicker();
     } else if (action === 'clear') {
       clearDue();
-      closeDuePicker();
+      closeDuePicker(true);
     } else if (action === 'ok') {
-      if (commitDue()) closeDuePicker();
+      if (commitDue()) closeDuePicker(true);
     }
   });
 }
@@ -152,12 +228,15 @@ function openDuePicker() {
   if (val) {
     const d = new Date(val);
     duePicker.selected = new Date(d);
-    duePicker.view = new Date(d);
+    duePicker.focused = dateAtMidnight(d);
+    duePicker.view = new Date(d.getFullYear(), d.getMonth(), 1);
     duePicker.hour = pad2(d.getHours());
     duePicker.minute = pad2(d.getMinutes());
   } else {
     duePicker.selected = null;
-    duePicker.view = new Date();
+    const now = new Date();
+    duePicker.focused = dateAtMidnight(now);
+    duePicker.view = new Date(now.getFullYear(), now.getMonth(), 1);
     duePicker.hour = '09';
     duePicker.minute = '00';
   }
@@ -170,18 +249,22 @@ function openDuePicker() {
   }
   positionDuePicker();
   $('#tfDuePicker').classList.add('open');
+  $('#tfDuePicker').setAttribute('aria-hidden', 'false');
   $('#tfDueDisplay').setAttribute('aria-expanded', 'true');
+  requestAnimationFrame(focusDueDay);
 }
 
-function closeDuePicker() {
+function closeDuePicker(restoreFocus = false) {
   duePicker.open = false;
   $('#tfDuePicker').classList.remove('open');
+  $('#tfDuePicker').setAttribute('aria-hidden', 'true');
   $('#tfDueDisplay').setAttribute('aria-expanded', 'false');
   const modalBody = $('#tfDueDisplay').closest('.modal-body');
   if (modalBody) {
     modalBody.classList.remove('due-picker-open');
     modalBody.style.removeProperty('--due-picker-space');
   }
+  if (restoreFocus) $('#tfDueDisplay').focus();
 }
 
 function positionDuePicker() {
@@ -223,21 +306,32 @@ function syncDueTimeInputs() {
   $('#dpMinute').value = duePicker.minute;
 }
 
-function renderDuePicker() {
+function renderDuePicker(restoreFocus = false) {
   const y = duePicker.view.getFullYear(), m = duePicker.view.getMonth();
   $('#dpTitle').textContent = `${y}年${pad2(m + 1)}月`;
   const firstDay = new Date(y, m, 1).getDay();
   const daysInMonth = new Date(y, m + 1, 0).getDate();
   let html = '';
-  for (let i = 0; i < firstDay; i++) html += '<span class="dp-day empty"></span>';
+  const today = dateAtMidnight(new Date());
+  let focusDate = duePicker.focused;
+  if (!focusDate || focusDate.getFullYear() !== y || focusDate.getMonth() !== m) {
+    focusDate = duePicker.selected && duePicker.selected.getFullYear() === y && duePicker.selected.getMonth() === m
+      ? dateAtMidnight(duePicker.selected)
+      : (today.getFullYear() === y && today.getMonth() === m ? today : new Date(y, m, 1));
+    duePicker.focused = focusDate;
+  }
+  for (let i = 0; i < firstDay; i++) html += '<span class="dp-day empty" aria-hidden="true"></span>';
   for (let d = 1; d <= daysInMonth; d++) {
     const cls = [];
     const cur = new Date(y, m, d);
-    if (duePicker.selected && cur.toDateString() === duePicker.selected.toDateString()) cls.push('selected');
-    if (cur.toDateString() === new Date().toDateString()) cls.push('today');
-    html += `<span class="dp-day ${cls.join(' ')}" data-day="${d}">${d}</span>`;
+    const selected = sameDate(cur, duePicker.selected);
+    if (selected) cls.push('selected');
+    if (sameDate(cur, today)) cls.push('today');
+    const tabIndex = sameDate(cur, focusDate) ? 0 : -1;
+    html += `<button type="button" role="gridcell" class="dp-day ${cls.join(' ')}" data-day="${d}" tabindex="${tabIndex}" aria-selected="${selected}" aria-label="${y}年${m + 1}月${d}日">${d}</button>`;
   }
   $('#dpDays').innerHTML = html;
+  if (restoreFocus) requestAnimationFrame(focusDueDay);
 }
 
 function commitDue() {
@@ -264,7 +358,8 @@ function setDue(iso) {
   const h = pad2(local.getHours()), min = pad2(local.getMinutes());
   const isoLocal = `${y}-${m}-${d}T${h}:${min}`;
   duePicker.selected = new Date(local);
-  duePicker.view = new Date(local);
+  duePicker.focused = dateAtMidnight(local);
+  duePicker.view = new Date(local.getFullYear(), local.getMonth(), 1);
   duePicker.hour = h;
   duePicker.minute = min;
   $('#tfDue').value = isoLocal;
@@ -273,13 +368,48 @@ function setDue(iso) {
   renderDuePicker();
 }
 
-function openModal(id) { $(id).classList.add('show'); }
-function closeModal(id) { $(id).classList.remove('show'); }
+function openModal(id) {
+  const mask = $(id);
+  mask._returnFocus = document.activeElement;
+  mask.classList.add('show');
+  mask.setAttribute('aria-hidden', 'false');
+  requestAnimationFrame(() => {
+    const target = mask.querySelector('[autofocus], input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])');
+    if (target) target.focus();
+  });
+}
+
+function closeModal(id) {
+  const mask = $(id);
+  if (!mask || !mask.classList.contains('show')) return;
+  if (id === '#taskModal') closeDuePicker();
+  mask.classList.remove('show');
+  mask.setAttribute('aria-hidden', 'true');
+  if (mask._returnFocus && document.contains(mask._returnFocus)) mask._returnFocus.focus();
+}
 
 $$('.modal-mask').forEach((mask) => {
   mask.addEventListener('click', (e) => {
-    if (e.target === mask || e.target.hasAttribute('data-close')) mask.classList.remove('show');
+    if (e.target === mask || e.target.hasAttribute('data-close')) closeModal('#' + mask.id);
   });
+});
+
+document.addEventListener('keydown', (e) => {
+  const shown = $$('.modal-mask.show');
+  const mask = shown[shown.length - 1];
+  if (!mask || duePicker.open) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeModal('#' + mask.id);
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  const focusable = $$(`#${mask.id} button:not([disabled]), #${mask.id} input:not([type="hidden"]):not([disabled]), #${mask.id} textarea:not([disabled]), #${mask.id} select:not([disabled]), #${mask.id} a[href]`)
+    .filter((el) => el.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
 /* ---------------- 初始化 ---------------- */
@@ -337,10 +467,13 @@ async function loadStats() {
 async function loadTasks() {
   const p = new URLSearchParams();
   Object.entries(state.filters).forEach(([k, v]) => { if (v) p.set(k, v); });
-  const { tasks } = await api('/api/tasks?' + p.toString());
+  const result = await api('/api/tasks?' + p.toString());
+  const tasks = Array.isArray(result.tasks) ? result.tasks : [];
   state.tasks = tasks;
+  const total = result.total === undefined || result.total === null || result.total === '' ? NaN : Number(result.total);
+  state.taskTotal = Number.isFinite(total) ? total : tasks.length;
   renderTasks();
-  loadCategories();
+  await loadCategories();
 }
 
 async function loadCategories() {
@@ -359,7 +492,7 @@ function canDelete(t) {
 
 function renderTasks() {
   const list = state.tasks;
-  $('#taskCount').textContent = `共 ${list.length} 条`;
+  $('#taskCount').textContent = `当前显示 ${list.length} / 共 ${state.taskTotal} 条`;
 
   if (!list.length) {
     $('#taskTableWrap').innerHTML =
@@ -444,10 +577,22 @@ function updateBatchDelUI() {
   const btn = $('#btnBatchDel');
   if (n > 0 && state.tasks.some((t) => state.selectedIds.has(t.id) && canDelete(t))) {
     btn.style.display = '';
-    $('#selCount').textContent = n;
+    renderBatchDeleteButton(n);
   } else {
     btn.style.display = 'none';
   }
+}
+
+function renderBatchDeleteButton(count, loading = false) {
+  const btn = $('#btnBatchDel');
+  if (loading) {
+    btn.textContent = '删除中...';
+    return;
+  }
+  const countEl = document.createElement('b');
+  countEl.id = 'selCount';
+  countEl.textContent = String(count);
+  btn.replaceChildren('删除选中（', countEl, '）');
 }
 
 async function delTask(id, ev) {
@@ -457,7 +602,7 @@ async function delTask(id, ev) {
     await api('/api/tasks/' + id, { method: 'DELETE' });
     state.selectedIds.delete(id);
     toast('任务已删除', 'ok');
-    refresh();
+    runAsync(() => refresh(), '任务列表刷新失败');
   } catch (e) { toast(e.message, 'err'); }
 }
 window.delTask = delTask;
@@ -471,7 +616,8 @@ $('#btnBatchDel').addEventListener('click', async () => {
   if (!ids.length) return;
   if (!confirm(`确认删除选中的 ${ids.length} 个任务？附件将一并清除，不可恢复。`)) return;
   const btn = $('#btnBatchDel');
-  btn.disabled = true; btn.textContent = '删除中...';
+  btn.disabled = true;
+  renderBatchDeleteButton(0, true);
   let ok = 0, fail = 0;
   for (const id of ids) {
     try {
@@ -479,9 +625,10 @@ $('#btnBatchDel').addEventListener('click', async () => {
     } catch { fail++; }
   }
   state.selectedIds.clear();
-  btn.disabled = false; btn.textContent = `删除选中（<b id="selCount">0</b>）`;
+  btn.disabled = false;
+  renderBatchDeleteButton(0);
   toast(`已删除 ${ok} 个任务${fail ? `，${fail} 个失败` : ''}`, ok > 0 ? 'ok' : 'err');
-  refresh();
+  runAsync(() => refresh(), '任务列表刷新失败');
 });
 
 /* ---------------- 任务详情 ---------------- */
@@ -542,7 +689,8 @@ async function showDetail(id) {
       try {
         await api(`/api/tasks/${id}/attachments`, { method: 'POST', body: fd });
         toast('附件上传成功', 'ok');
-        showDetail(id); loadTasks();
+        runAsync(() => showDetail(id), '任务详情刷新失败');
+        runAsync(() => loadTasks(), '任务列表刷新失败');
       } catch (err) { toast(err.message, 'err'); }
     });
   }
@@ -559,7 +707,7 @@ async function showDetail(id) {
 
   openModal('#detailModal');
 }
-window.showDetail = showDetail;
+window.showDetail = (id) => runAsync(() => showDetail(id), '任务详情加载失败');
 
 /* ---------------- 任务操作 ---------------- */
 
@@ -587,7 +735,7 @@ $('#btnConfirmDone').addEventListener('click', async () => {
     toast(`任务已完成，本次耗时 ${r.duration_text}`, 'ok');
     closeModal('#doneModal');
     closeModal('#detailModal');
-    refresh();
+    runAsync(() => refresh(), '任务列表刷新失败');
   } catch (e) { toast(e.message, 'err'); }
   finally { btn.disabled = false; }
 });
@@ -597,7 +745,8 @@ async function reopenTask(id) {
   try {
     await api('/api/tasks/' + id, { method: 'PATCH', body: { status: 'in_progress' } });
     toast('任务已重新开启', 'ok');
-    closeModal('#detailModal'); refresh();
+    closeModal('#detailModal');
+    runAsync(() => refresh(), '任务列表刷新失败');
   } catch (e) { toast(e.message, 'err'); }
 }
 window.reopenTask = reopenTask;
@@ -607,7 +756,8 @@ async function removeTask(id) {
   try {
     await api('/api/tasks/' + id, { method: 'DELETE' });
     toast('任务已删除', 'ok');
-    closeModal('#detailModal'); refresh();
+    closeModal('#detailModal');
+    runAsync(() => refresh(), '任务列表刷新失败');
   } catch (e) { toast(e.message, 'err'); }
 }
 window.removeTask = removeTask;
@@ -627,7 +777,7 @@ async function editTask(id) {
   $('#btnSaveTask').textContent = '保存修改';
   openModal('#taskModal');
 }
-window.editTask = editTask;
+window.editTask = (id) => runAsync(() => editTask(id), '任务加载失败，暂时无法编辑');
 
 /* ---------------- 新建任务 ---------------- */
 
@@ -705,7 +855,7 @@ $('#btnSaveTask').addEventListener('click', async () => {
     }
     closeModal('#taskModal');
     state.pendingFiles = [];
-    refresh();
+    runAsync(() => refresh(), '任务列表刷新失败');
   } catch (e) { toast(e.message, 'err'); }
   finally { btn.disabled = false; }
 });
@@ -719,22 +869,22 @@ $('#statusSeg').addEventListener('click', (e) => {
   b.classList.add('on');
   state.filters.status = b.dataset.status;
   state.selectedIds.clear();
-  loadTasks();
+  runAsync(() => loadTasks(), '任务筛选失败');
 });
-$('#fAssignee').addEventListener('change', (e) => { state.filters.assignee_id = e.target.value; state.selectedIds.clear(); loadTasks(); });
-$('#fCategory').addEventListener('change', (e) => { state.filters.category = e.target.value; state.selectedIds.clear(); loadTasks(); });
+$('#fAssignee').addEventListener('change', (e) => { state.filters.assignee_id = e.target.value; state.selectedIds.clear(); runAsync(() => loadTasks(), '任务筛选失败'); });
+$('#fCategory').addEventListener('change', (e) => { state.filters.category = e.target.value; state.selectedIds.clear(); runAsync(() => loadTasks(), '任务筛选失败'); });
 
 let searchTimer;
 $('#fSearch').addEventListener('input', (e) => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { state.filters.q = e.target.value.trim(); loadTasks(); }, 300);
+  searchTimer = setTimeout(() => { state.filters.q = e.target.value.trim(); runAsync(() => loadTasks(), '任务搜索失败'); }, 300);
 });
 $('#btnReset').addEventListener('click', () => {
   state.filters = { status: '', assignee_id: '', category: '', q: '' };
   $('#fSearch').value = ''; $('#fAssignee').value = ''; $('#fCategory').value = '';
   $$('#statusSeg button').forEach((x, i) => x.classList.toggle('on', i === 0));
   state.selectedIds.clear();
-  loadTasks();
+  runAsync(() => loadTasks(), '任务列表刷新失败');
 });
 
 /* ---------------- 导出 ---------------- */
@@ -827,7 +977,7 @@ $('#btnSaveUser').addEventListener('click', async () => {
       toast('用户创建成功', 'ok');
     }
     closeModal('#userModal');
-    loadUsers(); loadExecutors();
+    await Promise.all([loadUsers(), loadExecutors()]);
   } catch (e) { toast(e.message, 'err'); }
 });
 
@@ -835,7 +985,7 @@ window.toggleUser = async (id, active) => {
   try {
     await api('/api/users/' + id, { method: 'PATCH', body: { active } });
     toast(active ? '已启用' : '已停用', 'ok');
-    loadUsers(); loadExecutors();
+    await Promise.all([loadUsers(), loadExecutors()]);
   } catch (e) { toast(e.message, 'err'); }
 };
 
@@ -844,7 +994,7 @@ window.delUser = async (id) => {
   try {
     await api('/api/users/' + id, { method: 'DELETE' });
     toast('用户已删除', 'ok');
-    loadUsers(); loadExecutors();
+    await Promise.all([loadUsers(), loadExecutors()]);
   } catch (e) { toast(e.message, 'err'); }
 };
 
@@ -858,15 +1008,18 @@ $$('.nav a[data-view]').forEach((a) => {
     a.classList.add('active');
     $('#view-tasks').style.display = view === 'tasks' ? '' : 'none';
     $('#view-users').style.display = view === 'users' ? '' : 'none';
-    if (view === 'users') loadUsers(); else refresh();
+    if (view === 'users') runAsync(() => loadUsers(), '用户列表加载失败');
+    else runAsync(() => refresh(), '任务列表刷新失败');
   });
 });
 
 /* ---------------- 账号 ---------------- */
 
 $('#btnLogout').addEventListener('click', async () => {
-  await api('/api/auth/logout', { method: 'POST' });
-  location.href = '/login.html';
+  try {
+    await api('/api/auth/logout', { method: 'POST' });
+    location.href = '/login.html';
+  } catch (e) { toast(e.message || '退出失败，请稍后重试', 'err'); }
 });
 $('#btnPwd').addEventListener('click', () => { $('#pwOld').value = ''; $('#pwNew').value = ''; openModal('#pwdModal'); });
 $('#btnSavePwd').addEventListener('click', async () => {
@@ -879,7 +1032,9 @@ $('#btnSavePwd').addEventListener('click', async () => {
 
 /* 每 30 秒自动刷新任务，执行者可及时看到新派发的任务 */
 setInterval(() => {
-  if ($('#view-tasks').style.display !== 'none' && !$$('.modal-mask.show').length) refresh();
+  if ($('#view-tasks').style.display !== 'none' && !$$('.modal-mask.show').length) {
+    runAsync(() => refresh(), '自动刷新失败');
+  }
 }, 30000);
 
-init();
+runAsync(() => init(), '工作台初始化失败，请刷新页面重试');

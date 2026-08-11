@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { db, hashPassword, nowISO } = require('../db');
-const { requireLogin, requireRole } = require('../auth');
+const { requireLogin, requireRole, destroyUserSessions } = require('../auth');
 
 const router = express.Router();
 const ROLES = ['admin', 'assigner', 'executor'];
@@ -107,6 +107,7 @@ router.patch('/:id', requireRole('admin'), (req, res) => {
   if (!sets.length) return res.status(400).json({ error: '没有需要修改的内容' });
   args.push(id);
   db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...args);
+  if (password || active === false || active === 0) destroyUserSessions(id);
   res.json({ ok: true });
 });
 

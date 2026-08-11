@@ -27,6 +27,73 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024, files: 10 },
 });
 
+function removeUploadedFiles(files) {
+  let firstError = null;
+  const uploadRoot = `${path.resolve(UPLOAD_DIR)}${path.sep}`;
+  for (const file of files || []) {
+    const filePath = path.resolve(file.path || path.join(UPLOAD_DIR, file.filename || ''));
+    if (!filePath.startsWith(uploadRoot)) {
+      firstError ||= new Error('拒绝清理上传目录之外的文件');
+      continue;
+    }
+    try {
+      fs.unlinkSync(filePath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') firstError ||= error;
+    }
+  }
+  if (firstError) throw firstError;
+}
+
+function rejectUploadedRequest(req, res, next, status, message) {
+  try {
+    removeUploadedFiles(req.files);
+  } catch (error) {
+    return next(error);
+  }
+  return res.status(status).json({ error: message });
+}
+
+function forwardAfterUploadFailure(req, next, error) {
+  try {
+    removeUploadedFiles(req.files);
+  } catch (cleanupError) {
+    cleanupError.cause = error;
+    return next(cleanupError);
+  }
+  return next(error);
+}
+
+function runInTransaction(work) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = work();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (rollbackError) {
+      rollbackError.cause = error;
+      throw rollbackError;
+    }
+    throw error;
+  }
+}
+
+function normalizeDueAt(value) {
+  if (value === undefined || value === null || value === '') return { valid: true, value: null };
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { valid: false, value: null };
+  return { valid: true, value: date.toISOString() };
+}
+
+function boundedInteger(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min) return fallback;
+  return Math.min(number, max);
+}
+
 /** 修正 multer 中文文件名乱码（busboy 默认按 latin1 解析 header） */
 function decodeName(name) {
   if (!name) return 'unnamed';
@@ -91,16 +158,14 @@ function decorate(t) {
 /* ---------------- 任务列表 ---------------- */
 
 router.get('/', requireLogin, (req, res) => {
-  const { status, assignee_id, creator_id, category, q, scope } = req.query;
+  const { status, assignee_id, creator_id, category, q } = req.query;
   const where = [];
   const args = [];
 
-  // scope=all 供大屏使用：任何登录用户都可看全量（只读展示）
-  if (scope !== 'all') {
-    const sc = scopeClause(req.user);
-    where.push(sc.sql);
-    args.push(...sc.args);
-  }
+  // 查询参数不能扩大角色可见范围；管理员的 scopeClause 本身就是全量。
+  const sc = scopeClause(req.user);
+  where.push(sc.sql);
+  args.push(...sc.args);
   if (status && ['in_progress', 'completed'].includes(status)) {
     where.push('t.status = ?'); args.push(status);
   }
@@ -113,12 +178,36 @@ router.get('/', requireLogin, (req, res) => {
     args.push(kw, kw, kw);
   }
 
+  const limit = boundedInteger(req.query.limit, 200, 1, 500);
+  const requestedPage = boundedInteger(req.query.page, 1, 1, 2_147_483_647);
+  const offset = req.query.offset === undefined
+    ? (requestedPage - 1) * limit
+    : boundedInteger(req.query.offset, 0, 0, 2_147_483_647);
+  const total = Number(db.prepare(
+    `SELECT COUNT(*) AS count
+       FROM tasks t
+       JOIN users cu ON cu.id = t.creator_id
+       JOIN users au ON au.id = t.assignee_id
+      WHERE ${where.join(' AND ')}`
+  ).get(...args).count);
+
   const sql = `${BASE_SELECT} WHERE ${where.join(' AND ')}
     ORDER BY CASE t.status WHEN 'in_progress' THEN 0 ELSE 1 END,
              CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
-             t.created_at DESC`;
-  const rows = db.prepare(sql).all(...args).map(decorate);
-  res.json({ tasks: rows });
+             t.created_at DESC
+    LIMIT ? OFFSET ?`;
+  const rows = db.prepare(sql).all(...args, limit, offset).map(decorate);
+  res.json({
+    tasks: rows,
+    total,
+    pagination: {
+      limit,
+      offset,
+      page: Math.floor(offset / limit) + 1,
+      pages: Math.ceil(total / limit),
+      has_more: offset + rows.length < total,
+    },
+  });
 });
 
 /** 任务类别列表（用于筛选下拉） */
@@ -155,35 +244,52 @@ router.get('/:id', requireLogin, (req, res) => {
 
 /* ---------------- 创建任务 ---------------- */
 
-router.post('/', requireRole('admin', 'assigner'), upload.array('files', 10), (req, res) => {
+router.post('/', requireRole('admin', 'assigner'), upload.array('files', 10), (req, res, next) => {
   const { title, description, category, priority, assignee_id, due_at } = req.body || {};
-  if (!title || !String(title).trim()) return res.status(400).json({ error: '请填写任务标题' });
-  if (!assignee_id) return res.status(400).json({ error: '请指定任务执行人' });
+  if (!title || !String(title).trim()) {
+    return rejectUploadedRequest(req, res, next, 400, '请填写任务标题');
+  }
+  if (!assignee_id) return rejectUploadedRequest(req, res, next, 400, '请指定任务执行人');
 
   const assignee = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(assignee_id));
-  if (!assignee || assignee.active !== 1) return res.status(400).json({ error: '执行人不存在或已停用' });
-  if (assignee.role !== 'executor') return res.status(400).json({ error: '所选用户不是任务执行者' });
+  if (!assignee || assignee.active !== 1) {
+    return rejectUploadedRequest(req, res, next, 400, '执行人不存在或已停用');
+  }
+  if (assignee.role !== 'executor') {
+    return rejectUploadedRequest(req, res, next, 400, '所选用户不是任务执行者');
+  }
+
+  const normalizedDueAt = normalizeDueAt(due_at);
+  if (!normalizedDueAt.valid) return rejectUploadedRequest(req, res, next, 400, '截止时间不合法');
 
   const pr = ['low', 'normal', 'high', 'urgent'].includes(priority) ? priority : 'normal';
-  const info = db
-    .prepare(
-      `INSERT INTO tasks (title, description, category, priority, status, creator_id, assignee_id, due_at, created_at)
-       VALUES (?, ?, ?, ?, 'in_progress', ?, ?, ?, ?)`
-    )
-    .run(
-      String(title).trim(),
-      String(description || '').trim(),
-      String(category || '常规任务').trim() || '常规任务',
-      pr,
-      req.user.id,
-      assignee.id,
-      due_at ? new Date(due_at).toISOString() : null,
-      nowISO()
-    );
+  let taskId;
+  try {
+    taskId = runInTransaction(() => {
+      const info = db
+        .prepare(
+          `INSERT INTO tasks (title, description, category, priority, status, creator_id, assignee_id, due_at, created_at)
+           VALUES (?, ?, ?, ?, 'in_progress', ?, ?, ?, ?)`
+        )
+        .run(
+          String(title).trim(),
+          String(description || '').trim(),
+          String(category || '常规任务').trim() || '常规任务',
+          pr,
+          req.user.id,
+          assignee.id,
+          normalizedDueAt.value,
+          nowISO()
+        );
 
-  const taskId = Number(info.lastInsertRowid);
-  const n = saveAttachments(taskId, req.files, req.user.id, 'task');
-  log(taskId, req.user.id, 'create', `任务已派发给 ${assignee.name}${n ? `，附件 ${n} 个` : ''}`);
+      const id = Number(info.lastInsertRowid);
+      const n = saveAttachments(id, req.files, req.user.id, 'task');
+      log(id, req.user.id, 'create', `任务已派发给 ${assignee.name}${n ? `，附件 ${n} 个` : ''}`);
+      return id;
+    });
+  } catch (error) {
+    return forwardAfterUploadFailure(req, next, error);
+  }
 
   res.status(201).json({ id: taskId });
 });
@@ -238,7 +344,9 @@ router.patch('/:id', requireLogin, (req, res) => {
     sets.push('priority = ?'); args.push(priority); changes.push('优先级');
   }
   if (due_at !== undefined) {
-    sets.push('due_at = ?'); args.push(due_at ? new Date(due_at).toISOString() : null); changes.push('截止时间');
+    const normalizedDueAt = normalizeDueAt(due_at);
+    if (!normalizedDueAt.valid) return res.status(400).json({ error: '截止时间不合法' });
+    sets.push('due_at = ?'); args.push(normalizedDueAt.value); changes.push('截止时间');
   }
   if (assignee_id !== undefined && Number(assignee_id) !== task.assignee_id) {
     const assignee = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(assignee_id));
@@ -258,7 +366,7 @@ router.patch('/:id', requireLogin, (req, res) => {
 
 /* ---------------- 追加附件 ---------------- */
 
-router.post('/:id/attachments', requireLogin, upload.array('files', 10), (req, res) => {
+function authorizeAttachmentUpload(req, res, next) {
   const id = Number(req.params.id);
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!task) return res.status(404).json({ error: '任务不存在' });
@@ -267,10 +375,28 @@ router.post('/:id/attachments', requireLogin, upload.array('files', 10), (req, r
   const allowed = u.role === 'admin' || task.creator_id === u.id || task.assignee_id === u.id;
   if (!allowed) return res.status(403).json({ error: '无权上传附件' });
 
+  req.uploadTask = task;
+  next();
+}
+
+router.post('/:id/attachments', requireLogin, authorizeAttachmentUpload, upload.array('files', 10), (req, res, next) => {
+  const task = req.uploadTask;
+  const id = task.id;
+  const u = req.user;
+
   const kind = task.assignee_id === u.id && u.role === 'executor' ? 'result' : 'task';
-  const n = saveAttachments(id, req.files, u.id, kind);
-  if (!n) return res.status(400).json({ error: '未接收到文件' });
-  log(id, u.id, 'attach', `上传了 ${n} 个附件`);
+  if (!req.files || !req.files.length) return res.status(400).json({ error: '未接收到文件' });
+
+  let n;
+  try {
+    n = runInTransaction(() => {
+      const count = saveAttachments(id, req.files, u.id, kind);
+      log(id, u.id, 'attach', `上传了 ${count} 个附件`);
+      return count;
+    });
+  } catch (error) {
+    return forwardAfterUploadFailure(req, next, error);
+  }
   res.json({ ok: true, count: n });
 });
 

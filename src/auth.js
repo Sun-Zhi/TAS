@@ -33,6 +33,14 @@ function destroySession(token) {
   if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }
 
+function destroyUserSessions(userId, exceptToken = '') {
+  if (exceptToken) {
+    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(userId, exceptToken);
+  } else {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+  }
+}
+
 function cleanupSessions() {
   db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(nowISO());
 }
@@ -76,14 +84,23 @@ function requireRole(...roles) {
 }
 
 function setAuthCookie(res, token, expires) {
+  const secure = process.env.NODE_ENV === 'production' ||
+    /^(1|true|yes)$/i.test(process.env.SECURE_COOKIES || '') ||
+    /^https:\/\//i.test(process.env.BASE_URL || '');
   res.setHeader(
     'Set-Cookie',
-    `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}`
+    `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}${secure ? '; Secure' : ''}`
   );
 }
 
 function clearAuthCookie(res) {
-  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  const secure = process.env.NODE_ENV === 'production' ||
+    /^(1|true|yes)$/i.test(process.env.SECURE_COOKIES || '') ||
+    /^https:\/\//i.test(process.env.BASE_URL || '');
+  res.setHeader(
+    'Set-Cookie',
+    `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`
+  );
 }
 
 module.exports = {
@@ -93,6 +110,7 @@ module.exports = {
   requireRole,
   createSession,
   destroySession,
+  destroyUserSessions,
   cleanupSessions,
   setAuthCookie,
   clearAuthCookie,
