@@ -1,0 +1,55 @@
+# Gitea Actions：每次 push / PR 强制代码扫描（提交前门禁）
+# 用法：复制到你的项目仓库根目录 .gitea/workflows/code-scan.yml
+# 前提：仓库已开启 Actions，且已注册 act_runner（见 README “代码扫描” 节）
+# 说明：runner 通过 /var/run/docker.sock 调用扫描器镜像，仓库内无需装任何依赖
+
+name: code-scan
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  secret-scan:                # 密钥 / 敏感信息
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://gitea.com/actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks 密钥扫描
+        uses: docker://zricethezav/gitleaks:latest
+        args: detect --source=/workspace --redact --no-banner --exit-code 1
+
+  sast:                       # 安全 / 质量 SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://gitea.com/actions/checkout@v4
+      - name: Semgrep SAST
+        uses: docker://returntocorp/semgrep:latest
+        args: ci --config auto --error
+
+  fs-vuln:                    # 依赖 / 文件系统 / IaC / 许可证
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://gitea.com/actions/checkout@v4
+      - name: Trivy 漏洞扫描
+        uses: docker://aquasec/trivy:latest
+        args: fs --scanners vuln,secret,misconfig,license --exit-code 1 --severity HIGH,CRITICAL /workspace
+
+  lint:                       # 语法 / 风格（建议性，不强制阻断）
+    strategy:
+      matrix:
+        lang: [go, python, node]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://gitea.com/actions/checkout@v4
+      - name: golangci-lint
+        if: matrix.lang == 'go'
+        uses: docker://golangci/golangci-lint:latest
+        args: golangci-lint run -v
+      - name: pylint
+        if: matrix.lang == 'python'
+        run: docker run --rm -v "$PWD":/repo -w /repo python:3.12-slim sh -c "pip install pylint -q && pylint --fail-under=7.0 . || true"
+      - name: eslint
+        if: matrix.lang == 'node'
+        run: docker run --rm -v "$PWD":/repo -w /repo node:20-slim sh -c "npm i -g eslint >/dev/null 2>&1 && eslint . || true"
