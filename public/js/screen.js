@@ -50,7 +50,6 @@ async function load() {
   $('#kpis').innerHTML = `
     <div class="kpi"><div class="k">任务总数</div><div class="v">${s.total}</div><div class="d">今日新建 ${s.created_today}</div></div>
     <div class="kpi c2"><div class="k">执行中</div><div class="v">${s.running}</div><div class="d">进行中的任务</div></div>
-    <div class="kpi c5"><div class="k">已退回</div><div class="v">${s.returned}</div><div class="d">等待重新派发</div></div>
     <div class="kpi c3"><div class="k">已完成</div><div class="v">${s.done}</div><div class="d">今日完成 ${s.done_today}</div></div>
     <div class="kpi c4"><div class="k">已逾期</div><div class="v">${s.overdue}</div><div class="d">超出要求完成时间</div></div>
     <div class="kpi c1"><div class="k">任务完成率</div><div class="v">${s.complete_rate}<small>%</small></div><div class="d">完成 / 总数</div></div>

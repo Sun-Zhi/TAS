@@ -321,10 +321,14 @@ textarea.input { resize: vertical; min-height: 88px; }
 }
 .panel-body { padding: 18px; }
 
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.stat-grid {
+  display: grid; grid-template-columns: repeat(7, minmax(82px, 1fr));
+  gap: clamp(6px, .8vw, 14px); margin-bottom: 20px; overflow-x: auto;
+}
 .stat {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px 18px; box-shadow: var(--shadow); position: relative; overflow: hidden;
+  min-width: 0; padding: clamp(10px, 1vw, 16px) clamp(9px, 1.1vw, 18px);
+  box-shadow: var(--shadow); position: relative; overflow: hidden;
   backdrop-filter: blur(8px);
 }
 .stat::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--primary); }
@@ -334,9 +338,12 @@ textarea.input { resize: vertical; min-height: 88px; }
 .stat.red::before { background: var(--danger); }
 .stat.purple::before { background: #a78bfa; }
 .stat.returned::before { background: #f59e0b; }
-.stat .k { color: var(--text-sub); font-size: 12.5px; margin-bottom: 6px; letter-spacing: .5px; }
-.stat .v { font-size: 27px; font-weight: 700; letter-spacing: -.5px; color: var(--text); font-variant-numeric: tabular-nums; }
-.stat .v.sm { font-size: 20px; }
+.stat .k {
+  color: var(--text-sub); font-size: clamp(10px, .75vw, 12.5px); margin-bottom: 6px;
+  letter-spacing: .3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.stat .v { font-size: clamp(20px, 1.65vw, 27px); font-weight: 700; letter-spacing: -.5px; color: var(--text); font-variant-numeric: tabular-nums; }
+.stat .v.sm { font-size: clamp(15px, 1.25vw, 20px); white-space: nowrap; }
 .stat.blue .v { color: var(--primary2); }
 .stat.green .v { color: var(--success); }
 .stat.orange .v { color: var(--warn); }
