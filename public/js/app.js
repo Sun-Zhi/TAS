@@ -913,7 +913,6 @@ async function loadTaskDetail(id) {
 
   $('#dtFoot').innerHTML = `
     ${canEdit && t.status === 'completed' ? `<button class="btn ghost" onclick="reopenTask(${t.id})">重新开启</button>` : ''}
-    ${canEdit && t.returned ? `<button class="btn" onclick="redispatchTask(${t.id})">重新派发</button>` : ''}
     ${canEdit ? `<button class="btn danger" onclick="removeTask(${t.id})">删除任务</button>` : ''}
     ${canEdit && t.status === 'in_progress' && !t.awaiting_confirmation ? `<button class="btn ghost" onclick="editTask(${t.id})">编辑任务</button>` : ''}
     ${canRequestDone ? `<button class="btn success" onclick="markDone(${t.id})">标记执行完成</button>` : ''}
@@ -1083,17 +1082,6 @@ async function reopenTask(id) {
 }
 window.reopenTask = reopenTask;
 
-async function redispatchTask(id) {
-  if (!await askConfirm('重新派发后任务将恢复为执行中，执行人可以继续处理。', '重新派发任务', '确认重新派发')) return;
-  try {
-    await api('/api/tasks/' + id, { method: 'PATCH', body: { status: 'in_progress' } });
-    toast('任务已重新派发', 'ok');
-    closeModal('#detailModal');
-    runAsync(() => refresh(), '任务列表刷新失败');
-  } catch (error) { toast(error.message, 'err'); }
-}
-window.redispatchTask = redispatchTask;
-
 async function removeTask(id) {
   if (!await askConfirm('任务及其附件将被一并删除，删除后不可恢复。', '删除任务', '确认删除')) return;
   try {
@@ -1108,7 +1096,8 @@ window.removeTask = removeTask;
 async function openTaskEditor(id) {
   const { task: t } = await api('/api/tasks/' + id);
   closeModal('#detailModal');
-  $('#taskModalTitle').textContent = '编辑任务';
+  const isReturned = Boolean(t.returned);
+  $('#taskModalTitle').textContent = isReturned ? '编辑并重新派发任务' : '编辑任务';
   $('#tfId').value = t.id;
   $('#tfTitle').value = t.title;
   $('#tfDesc').value = t.description || '';
@@ -1118,7 +1107,7 @@ async function openTaskEditor(id) {
   setDue(t.due_at);
   $('#tfDue').dataset.original = $('#tfDue').value;
   $('#tfFileField').style.display = 'none';
-  $('#btnSaveTask').textContent = '保存修改';
+  $('#btnSaveTask').textContent = isReturned ? '保存并重新派发' : '保存修改';
   openModal('#taskModal');
 }
 window.editTask = (id) => runAsync(() => openTaskEditor(id), '任务加载失败，暂时无法编辑');
@@ -1195,7 +1184,7 @@ $('#btnSaveTask').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     if (id) {
-      await api('/api/tasks/' + id, {
+      const result = await api('/api/tasks/' + id, {
         method: 'PATCH',
         body: {
           title, description: $('#tfDesc').value, category: $('#tfCategory').value.trim() || '常规任务',
@@ -1203,7 +1192,7 @@ $('#btnSaveTask').addEventListener('click', async () => {
           due_at: $('#tfDue').value || null,
         },
       });
-      toast('任务已更新', 'ok');
+      toast(result.redispatched ? '任务已重新编辑并派发给执行人' : '任务已更新', 'ok');
     } else {
       const fd = new FormData();
       fd.append('title', title);

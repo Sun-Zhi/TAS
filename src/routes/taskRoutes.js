@@ -426,16 +426,14 @@ router.patch('/:id', requireLogin, (req, res) => {
       log(id, u.id, 'complete_confirm', `发布者确认完成，耗时 ${humanDuration(ms)}`);
       return res.json({ ok: true, duration_text: humanDuration(ms) });
     }
-    // 重新打开已完成任务，或重新派发已退回任务。
+    // 仅允许重新开启已完成任务；退回任务必须通过编辑后重新派发。
     if (!isOwner) return res.status(403).json({ error: '只有管理员或任务创建者可以重新开启任务' });
-    if (task.status === 'in_progress' && !task.returned_at) {
-      return res.status(400).json({ error: '该任务已经在执行中' });
-    }
+    if (task.returned_at) return res.status(400).json({ error: '请编辑任务后重新派发' });
+    if (task.status === 'in_progress') return res.status(400).json({ error: '该任务已经在执行中' });
     db.prepare(
       "UPDATE tasks SET status='in_progress', completed_at=NULL, result_note='', completion_requested_at=NULL, completion_request_note='', returned_at=NULL, return_reason='' WHERE id=?"
     ).run(id);
-    const redispatch = Boolean(task.returned_at);
-    log(id, u.id, redispatch ? 'redispatch' : 'reopen', redispatch ? '退回任务被重新派发' : '任务被重新开启');
+    log(id, u.id, 'reopen', '任务被重新开启');
     return res.json({ ok: true });
   }
 
@@ -444,6 +442,7 @@ router.patch('/:id', requireLogin, (req, res) => {
   if (task.completion_requested_at) return res.status(409).json({ error: '任务正在等待完成确认，确认后再修改' });
 
   const { title, description, category, priority, assignee_id, due_at } = req.body || {};
+  const redispatching = Boolean(task.returned_at);
   const sets = [];
   const args = [];
   const changes = [];
@@ -458,7 +457,7 @@ router.patch('/:id', requireLogin, (req, res) => {
     const normalizedDueAt = normalizeDueAt(due_at);
     if (!normalizedDueAt.valid) return res.status(400).json({ error: '截止时间不合法' });
     const unchanged = normalizedDueAt.value === task.due_at;
-    if (normalizedDueAt.value && !unchanged && new Date(normalizedDueAt.value).getTime() <= Date.now()) {
+    if (normalizedDueAt.value && (redispatching || !unchanged) && new Date(normalizedDueAt.value).getTime() <= Date.now()) {
       return res.status(400).json({ error: '要求完成时间必须晚于当前时间' });
     }
     sets.push('due_at = ?'); args.push(normalizedDueAt.value); changes.push('截止时间');
@@ -473,10 +472,15 @@ router.patch('/:id', requireLogin, (req, res) => {
   }
 
   if (!sets.length) return res.status(400).json({ error: '没有需要修改的内容' });
+  if (redispatching) {
+    sets.push("status = 'in_progress'", 'completed_at = NULL', "result_note = ''", 'completion_requested_at = NULL', "completion_request_note = ''", 'returned_at = NULL', "return_reason = ''");
+  }
   args.push(id);
   db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...args);
-  log(id, u.id, 'update', `修改了：${changes.join('、')}`);
-  res.json({ ok: true });
+  log(id, u.id, redispatching ? 'redispatch_edit' : 'update', redispatching
+    ? `重新编辑并派发任务，修改了：${changes.join('、')}`
+    : `修改了：${changes.join('、')}`);
+  res.json({ ok: true, redispatched: redispatching });
 });
 
 /* ---------------- 追加附件 ---------------- */

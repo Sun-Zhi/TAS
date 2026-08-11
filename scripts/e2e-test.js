@@ -205,13 +205,20 @@ async function stopServer() {
     method: 'POST', token: newUserToken, body: blockedCompletionForm,
   });
   ok(blockedCompletion.status === 409, '已退回任务不能提交完成申请');
-  const redispatch = await req('/api/tasks/' + taskId, {
+  const directRedispatch = await req('/api/tasks/' + taskId, {
     method: 'PATCH', token: pm, body: { status: 'in_progress' },
   });
-  ok(redispatch.status === 200, '任务发布者可以重新派发已退回任务');
+  ok(directRedispatch.status === 400, '退回任务不能跳过编辑直接重新派发');
+  const redispatchEdit = await req('/api/tasks/' + taskId, {
+    method: 'PATCH', token: pm, body: { description: '已补充验收标准，重新派发给执行者处理' },
+  });
+  ok(redispatchEdit.status === 200 && redispatchEdit.data.redispatched, '发布者编辑后可重新派发退回任务');
   const redispatchedDetail = await req('/api/tasks/' + taskId, { token: newUserToken });
-  ok(!redispatchedDetail.data.task.returned && !redispatchedDetail.data.task.return_reason,
-    '重新派发后清除退回状态和理由');
+  ok(!redispatchedDetail.data.task.returned && !redispatchedDetail.data.task.return_reason &&
+    redispatchedDetail.data.task.description.includes('已补充验收标准'),
+  '重新编辑并派发后清除退回状态和理由');
+  ok(redispatchedDetail.data.logs.some((log) => log.action === 'redispatch_edit'),
+    '重新编辑并派发记录保留在历史操作中');
 
   const completionForm = new FormData();
   completionForm.append('result_note', '评审结论已同步至文档');
