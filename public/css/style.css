@@ -361,6 +361,28 @@ textarea.input { resize: vertical; min-height: 88px; }
   width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 9px;
   color: #0b1022; background: linear-gradient(135deg, #c4b5fd, #8b5cf6); font-weight: 800;
 }
+
+/* ---------- 岗位分工 ---------- */
+.responsibility-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px;
+}
+.responsibility-card {
+  position: relative; min-height: 178px; padding: 18px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); overflow: hidden;
+}
+.responsibility-card::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: linear-gradient(180deg, var(--primary2), var(--primary));
+}
+.responsibility-card .rc-head { display: flex; align-items: flex-start; gap: 10px; }
+.responsibility-card .rc-name { font-size: 16px; font-weight: 700; color: var(--text); }
+.responsibility-card .rc-meta { margin-top: 3px; color: var(--text-mute); font-size: 12px; }
+.responsibility-card .rc-body {
+  margin-top: 16px; padding-top: 13px; border-top: 1px dashed rgba(75, 136, 235, .23);
+  color: var(--text-sub); font-size: 13px; line-height: 1.7; white-space: pre-wrap;
+}
+.responsibility-card .rc-body.empty { color: var(--text-mute); font-style: italic; }
+.responsibility-card .rc-actions { margin-top: 15px; display: flex; justify-content: flex-end; }
 .completion-notice > div:nth-child(2) { flex: 1; }
 .completion-notice > div:nth-child(2) > div { margin-top: 2px; color: var(--text-sub); font-size: 12px; }
 

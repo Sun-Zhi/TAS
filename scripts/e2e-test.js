@@ -108,6 +108,21 @@ async function stopServer() {
   ok((await req('/api/auth/login', { method: 'POST', body: { username: uname, password: '123456' } })).status === 200,
     '新建用户可正常登录');
 
+  const responsibilityView = await req('/api/users/responsibilities', { token: pm });
+  ok(responsibilityView.status === 200 && responsibilityView.data.users.some((user) => user.id === newUserId),
+    '已登录用户可查看执行者岗位分工');
+  const responsibilityForbidden = await req(`/api/users/${newUserId}/responsibilities`, {
+    method: 'PATCH', token: pm, body: { responsibilities: '越权修改' },
+  });
+  ok(responsibilityForbidden.status === 403, '非管理员不能编辑执行者岗位职责');
+  const responsibilitySave = await req(`/api/users/${newUserId}/responsibilities`, {
+    method: 'PATCH', token: admin, body: { responsibilities: '负责前端功能开发和联调验收' },
+  });
+  ok(responsibilitySave.status === 200, '管理员可保存执行者岗位职责');
+  const responsibilityCheck = await req('/api/users/responsibilities', { token: admin });
+  ok(responsibilityCheck.data.users.some((user) => user.id === newUserId && user.responsibilities === '负责前端功能开发和联调验收'),
+    '岗位职责可被正确读取');
+
   console.log('\n【3】创建任务 + 中文附件上传');
   const fd = new FormData();
   fd.append('title', '首页改版需求评审');

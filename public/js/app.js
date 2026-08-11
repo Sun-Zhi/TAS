@@ -15,6 +15,7 @@ const state = {
   taskTotal: 0,
   executors: [],
   users: [],
+  responsibilityUsers: [],
   filters: { status: '', assignee_id: '', category: '', q: '' },
   pendingFiles: [],
   selectedIds: new Set(),
@@ -573,6 +574,7 @@ async function init() {
   if (me.role === 'admin') {
     $('#navUsers').style.display = '';
     $('#scopeDesc').textContent = '管理员视角 · 可查看系统内全部任务';
+    $('#responsibilityDesc').textContent = '管理员可定义每位执行者负责的岗位职责';
   } else if (me.role === 'assigner') {
     $('#scopeDesc').textContent = '分配者视角 · 展示我创建并派发的任务';
   } else {
@@ -1390,6 +1392,55 @@ window.delUser = async (id) => {
   } catch (e) { toast(e.message, 'err'); }
 };
 
+/* ---------------- 岗位分工 ---------------- */
+
+async function loadResponsibilities() {
+  const { users } = await api('/api/users/responsibilities');
+  state.responsibilityUsers = users;
+  const canEdit = state.me.role === 'admin';
+  $('#responsibilityGrid').innerHTML = users.length ? users.map((user) => `
+    <article class="responsibility-card">
+      <div class="rc-head">
+        <div class="avatar">${esc(user.name).slice(0, 1) || '-'}</div>
+        <div>
+          <div class="rc-name">${esc(user.name)} ${user.active ? '' : '<span class="badge gray">已停用</span>'}</div>
+          <div class="rc-meta">${esc(user.dept || '未设置部门')} · ${esc(user.username)}</div>
+        </div>
+      </div>
+      <div class="rc-body${user.responsibilities ? '' : ' empty'}">${user.responsibilities ? esc(user.responsibilities) : '暂未定义岗位职责'}</div>
+      ${canEdit ? `<div class="rc-actions"><button class="btn ghost sm" onclick="editResponsibility(${user.id})">编辑职责</button></div>` : ''}
+    </article>`).join('') : '<div class="empty"><div class="ico">👥</div>暂未创建执行者账号</div>';
+}
+
+function editResponsibility(id) {
+  const user = state.responsibilityUsers.find((item) => item.id === id);
+  if (!user) return toast('执行者信息不存在，请刷新后重试', 'err');
+  $('#responsibilityUserId').value = user.id;
+  $('#responsibilityUserInfo').innerHTML = `<b>${esc(user.name)}</b><div class="cell-sub" style="margin-top:4px">${esc(user.dept || '未设置部门')} · ${esc(user.username)}</div>`;
+  $('#responsibilityText').value = user.responsibilities || '';
+  openModal('#responsibilityModal');
+  $('#responsibilityText').focus();
+}
+window.editResponsibility = editResponsibility;
+
+$('#btnSaveResponsibility').addEventListener('click', async () => {
+  const id = $('#responsibilityUserId').value;
+  const button = $('#btnSaveResponsibility');
+  button.disabled = true;
+  try {
+    await api(`/api/users/${id}/responsibilities`, {
+      method: 'PATCH', body: { responsibilities: $('#responsibilityText').value.trim() },
+    });
+    closeModal('#responsibilityModal');
+    await loadResponsibilities();
+    toast('岗位职责已保存', 'ok');
+  } catch (error) {
+    toast(error.message, 'err');
+  } finally {
+    button.disabled = false;
+  }
+});
+
 /* ---------------- 导航 ---------------- */
 
 $$('.nav a[data-view]').forEach((a) => {
@@ -1400,7 +1451,9 @@ $$('.nav a[data-view]').forEach((a) => {
     a.classList.add('active');
     $('#view-tasks').style.display = view === 'tasks' ? '' : 'none';
     $('#view-users').style.display = view === 'users' ? '' : 'none';
+    $('#view-responsibilities').style.display = view === 'responsibilities' ? '' : 'none';
     if (view === 'users') runAsync(() => loadUsers(), '用户列表加载失败');
+    else if (view === 'responsibilities') runAsync(() => loadResponsibilities(), '岗位分工加载失败');
     else runAsync(() => refresh(), '任务列表刷新失败');
   });
 });

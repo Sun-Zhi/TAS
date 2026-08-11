@@ -43,6 +43,32 @@ router.get('/executors', requireLogin, (req, res) => {
   res.json({ users: rows });
 });
 
+/** 执行者岗位分工（所有已登录用户可查看） */
+router.get('/responsibilities', requireLogin, (req, res) => {
+  const scope = req.user.role === 'admin' ? '' : 'AND active = 1';
+  const users = db.prepare(
+    `SELECT id, username, name, dept, active, responsibilities
+       FROM users WHERE role = 'executor' ${scope}
+       ORDER BY active DESC, dept, name`
+  ).all();
+  res.json({ users });
+});
+
+/** 设置执行者岗位职责（仅管理员） */
+router.patch('/:id/responsibilities', requireRole('admin'), (req, res) => {
+  const id = Number(req.params.id);
+  const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: '用户不存在' });
+  if (user.role !== 'executor') return res.status(400).json({ error: '只能维护执行者的岗位职责' });
+
+  const responsibilities = String((req.body && req.body.responsibilities) || '').trim();
+  if (responsibilities.length > 2000) {
+    return res.status(400).json({ error: '岗位职责不能超过 2000 个字符' });
+  }
+  db.prepare('UPDATE users SET responsibilities = ? WHERE id = ?').run(responsibilities, id);
+  res.json({ ok: true });
+});
+
 /** 创建用户（仅管理员） */
 router.post('/', requireRole('admin'), (req, res) => {
   const { username, password, name, role, dept } = req.body || {};

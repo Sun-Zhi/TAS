@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS users (
   name        TEXT    NOT NULL,
   role        TEXT    NOT NULL CHECK (role IN ('admin','assigner','executor')),
   dept        TEXT    DEFAULT '',
+  responsibilities TEXT DEFAULT '',
   active      INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT    NOT NULL
 );
@@ -104,6 +105,12 @@ if (!taskColumns.has('return_reason')) {
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_completion_request ON tasks(completion_requested_at);');
 db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_returned ON tasks(returned_at);');
+
+// 兼容已部署的旧数据库：为执行者补充可维护的岗位职责说明。
+const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map((column) => column.name));
+if (!userColumns.has('responsibilities')) {
+  db.exec("ALTER TABLE users ADD COLUMN responsibilities TEXT DEFAULT ''");
+}
 
 /* ---------------- 密码哈希 ---------------- */
 
