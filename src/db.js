@@ -96,7 +96,14 @@ if (!taskColumns.has('completion_requested_at')) {
 if (!taskColumns.has('completion_request_note')) {
   db.exec("ALTER TABLE tasks ADD COLUMN completion_request_note TEXT DEFAULT ''");
 }
+if (!taskColumns.has('returned_at')) {
+  db.exec('ALTER TABLE tasks ADD COLUMN returned_at TEXT');
+}
+if (!taskColumns.has('return_reason')) {
+  db.exec("ALTER TABLE tasks ADD COLUMN return_reason TEXT DEFAULT ''");
+}
 db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_completion_request ON tasks(completion_requested_at);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_returned ON tasks(returned_at);');
 
 /* ---------------- 密码哈希 ---------------- */
 

@@ -166,6 +166,38 @@ async function stopServer() {
   });
   ok(executorDetailUpload.status === 403, '执行者不能从任务详情追加附件');
 
+  const wrongReturn = await req('/api/tasks/' + taskId + '/return', {
+    method: 'POST', token: dev, body: { reason: '越权退回' },
+  });
+  ok(wrongReturn.status === 403, '非任务接收者不能退回任务');
+  const emptyReturn = await req('/api/tasks/' + taskId + '/return', {
+    method: 'POST', token: newUserToken, body: { reason: '   ' },
+  });
+  ok(emptyReturn.status === 400, '退回任务必须填写理由');
+  const returned = await req('/api/tasks/' + taskId + '/return', {
+    method: 'POST', token: newUserToken, body: { reason: '当前任务要求不完整，请补充验收标准' },
+  });
+  ok(returned.status === 200, '任务接收者可填写理由并退回任务', JSON.stringify(returned.data));
+  const returnedDetail = await req('/api/tasks/' + taskId, { token: pm });
+  ok(returnedDetail.data.task.returned && returnedDetail.data.task.return_reason === '当前任务要求不完整，请补充验收标准',
+    '发布者可查看已退回状态和退回理由');
+  const returnedOverview = await req('/api/overview', { token: pm });
+  ok(returnedOverview.data.returned === 1, '发布者统计包含一个已退回任务');
+  const returnedList = await req('/api/tasks?status=returned', { token: admin });
+  ok(returnedList.data.tasks.some((task) => task.id === taskId), '管理员的已退回筛选包含该任务');
+  const blockedCompletionForm = new FormData();
+  const blockedCompletion = await req('/api/tasks/' + taskId + '/completion-request', {
+    method: 'POST', token: newUserToken, body: blockedCompletionForm,
+  });
+  ok(blockedCompletion.status === 409, '已退回任务不能提交完成申请');
+  const redispatch = await req('/api/tasks/' + taskId, {
+    method: 'PATCH', token: pm, body: { status: 'in_progress' },
+  });
+  ok(redispatch.status === 200, '任务发布者可以重新派发已退回任务');
+  const redispatchedDetail = await req('/api/tasks/' + taskId, { token: newUserToken });
+  ok(!redispatchedDetail.data.task.returned && !redispatchedDetail.data.task.return_reason,
+    '重新派发后清除退回状态和理由');
+
   const completionForm = new FormData();
   completionForm.append('result_note', '评审结论已同步至文档');
   completionForm.append('files', new Blob(['最终评审成果'], { type: 'text/plain' }), '评审成果.txt');

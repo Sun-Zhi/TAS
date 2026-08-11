@@ -333,6 +333,7 @@ textarea.input { resize: vertical; min-height: 88px; }
 .stat.orange::before { background: var(--warn); }
 .stat.red::before { background: var(--danger); }
 .stat.purple::before { background: #a78bfa; }
+.stat.returned::before { background: #f59e0b; }
 .stat .k { color: var(--text-sub); font-size: 12.5px; margin-bottom: 6px; letter-spacing: .5px; }
 .stat .v { font-size: 27px; font-weight: 700; letter-spacing: -.5px; color: var(--text); font-variant-numeric: tabular-nums; }
 .stat .v.sm { font-size: 20px; }
@@ -341,6 +342,7 @@ textarea.input { resize: vertical; min-height: 88px; }
 .stat.orange .v { color: var(--warn); }
 .stat.red .v { color: var(--danger); }
 .stat.purple .v { color: #c4b5fd; }
+.stat.returned .v { color: #fbbf24; }
 
 .completion-notice {
   display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 12px 16px;
@@ -400,6 +402,7 @@ table.tbl tbody tr.sel:hover { background: rgba(49, 226, 242, .18); }
 .badge.done { background: var(--success-soft); color: #7df0b8; }
 .badge.overdue { background: var(--danger-soft); color: #ff9aa9; }
 .badge.pending { background: rgba(167, 139, 250, .16); color: #d8ccff; }
+.badge.returned { background: rgba(245, 158, 11, .16); color: #fcd34d; }
 .badge.gray { background: rgba(255, 255, 255, .08); color: var(--text-mute); }
 .pri { font-size: 12px; font-weight: 600; }
 .pri.urgent { color: var(--danger); }

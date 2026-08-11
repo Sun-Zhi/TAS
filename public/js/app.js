@@ -605,6 +605,7 @@ async function loadStats() {
     <div class="stat blue"><div class="k">任务总数</div><div class="v">${s.total}</div></div>
     <div class="stat orange"><div class="k">执行中</div><div class="v">${s.running}</div></div>
     <div class="stat purple"><div class="k">待确认完成</div><div class="v">${s.pending_confirmation}</div></div>
+    <div class="stat returned"><div class="k">已退回</div><div class="v">${s.returned}</div></div>
     <div class="stat green"><div class="k">已完成</div><div class="v">${s.done}</div></div>
     <div class="stat red"><div class="k">已逾期</div><div class="v">${s.overdue}</div></div>
     <div class="stat"><div class="k">平均完成耗时</div><div class="v sm">${esc(s.avg_duration_text)}</div></div>`;
@@ -657,7 +658,9 @@ function renderTasks() {
   const rows = list.map((t) => {
     const statusBadge = t.status === 'completed'
       ? `<span class="badge done">已完成</span>`
-      : t.awaiting_confirmation
+      : t.returned
+        ? `<span class="badge returned">已退回</span>`
+        : t.awaiting_confirmation
         ? `<span class="badge pending"><i class="dot-live"></i>${t.creator_id === state.me.id || state.me.role === 'admin' ? '待您确认' : '待发布者确认'}</span>`
         : t.overdue
         ? `<span class="badge overdue"><i class="dot-live"></i>已逾期</span>`
@@ -665,12 +668,15 @@ function renderTasks() {
 
     const timeCell = t.status === 'completed'
       ? `<b style="color:var(--success)">${esc(t.duration_text)}</b><div class="cell-sub">${fmt(t.completed_at)} 完成</div>`
-      : t.awaiting_confirmation
+      : t.returned
+        ? `<b style="color:#fbbf24">任务已退回</b><div class="cell-sub">${fmt(t.returned_at)}</div>`
+        : t.awaiting_confirmation
         ? `<b style="color:#c4b5fd">已提交完成申请</b><div class="cell-sub">${fmt(t.completion_requested_at)}</div>`
         : `<span style="color:var(--warn)">已进行 ${elapsed(t.created_at)}</span>${t.due_at ? `<div class="cell-sub">要求 ${fmt(t.due_at)}</div>` : ''}`;
 
-    const canRequestDone = t.status === 'in_progress' && !t.awaiting_confirmation &&
+    const canRequestDone = t.status === 'in_progress' && !t.returned && !t.awaiting_confirmation &&
       t.assignee_id === state.me.id && state.me.role === 'executor';
+    const canReturn = canRequestDone;
     const canConfirmDone = t.awaiting_confirmation &&
       (t.creator_id === state.me.id || state.me.role === 'admin');
     const waitingButton = t.awaiting_confirmation && t.assignee_id === state.me.id
@@ -697,6 +703,7 @@ function renderTasks() {
       <td style="white-space:nowrap">
         <button class="btn ghost sm" onclick="showDetail(${t.id})">详情</button>
         ${canRequestDone ? `<button class="btn success sm" onclick="markDone(${t.id})">标记完成</button>` : ''}
+        ${canReturn ? `<button class="btn danger sm" onclick="returnTask(${t.id})">退回</button>` : ''}
         ${canConfirmDone ? `<button class="btn success sm" onclick="confirmCompletion(${t.id})">确认完成</button>` : ''}
         ${waitingButton}
         ${delBtn}
@@ -805,7 +812,9 @@ async function loadTaskDetail(id) {
 
   const statusBadge = t.status === 'completed'
     ? `<span class="badge done">已完成</span>`
-    : t.awaiting_confirmation
+    : t.returned
+      ? `<span class="badge returned">已退回</span>`
+      : t.awaiting_confirmation
       ? `<span class="badge pending">${t.creator_id === state.me.id || state.me.role === 'admin' ? '待您确认' : '待发布者确认'}</span>`
       : t.overdue ? `<span class="badge overdue">已逾期</span>` : `<span class="badge running">执行中</span>`;
 
@@ -833,6 +842,9 @@ async function loadTaskDetail(id) {
       <div class="detail-row"><div class="lb">完成时间</div><div class="vl">${fmt(t.completed_at)}</div></div>
       <div class="detail-row"><div class="lb">执行耗时</div><div class="vl"><b style="color:var(--success);font-size:15px">${esc(t.duration_text)}</b></div></div>
       ${t.result_note ? `<div class="detail-row"><div class="lb">完成说明</div><div class="vl">${esc(t.result_note)}</div></div>` : ''}
+    ` : t.returned ? `
+      <div class="detail-row"><div class="lb">退回时间</div><div class="vl"><b style="color:#fbbf24">${fmt(t.returned_at)}</b></div></div>
+      <div class="detail-row"><div class="lb">退回理由</div><div class="vl" style="white-space:pre-wrap;color:#fcd34d">${esc(t.return_reason)}</div></div>
     ` : t.awaiting_confirmation ? `
       <div class="detail-row"><div class="lb">完成申请</div><div class="vl"><b style="color:#c4b5fd">${fmt(t.completion_requested_at)} 已提交</b></div></div>
       <div class="detail-row"><div class="lb">完成说明</div><div class="vl" style="white-space:pre-wrap">${esc(t.completion_request_note) || '<span class="hint">未填写</span>'}</div></div>
@@ -890,17 +902,20 @@ async function loadTaskDetail(id) {
   }
 
   const canEdit = t.creator_id === state.me.id || state.me.role === 'admin';
-  const canRequestDone = t.status === 'in_progress' && !t.awaiting_confirmation &&
+  const canRequestDone = t.status === 'in_progress' && !t.returned && !t.awaiting_confirmation &&
     t.assignee_id === state.me.id && state.me.role === 'executor';
+  const canReturn = canRequestDone;
   const canConfirmDone = t.awaiting_confirmation && canEdit;
   const waitingButton = t.awaiting_confirmation && t.assignee_id === state.me.id
     ? '<button class="btn ghost" disabled>等待发布者确认</button>' : '';
 
   $('#dtFoot').innerHTML = `
     ${canEdit && t.status === 'completed' ? `<button class="btn ghost" onclick="reopenTask(${t.id})">重新开启</button>` : ''}
+    ${canEdit && t.returned ? `<button class="btn" onclick="redispatchTask(${t.id})">重新派发</button>` : ''}
     ${canEdit ? `<button class="btn danger" onclick="removeTask(${t.id})">删除任务</button>` : ''}
     ${canEdit && t.status === 'in_progress' && !t.awaiting_confirmation ? `<button class="btn ghost" onclick="editTask(${t.id})">编辑任务</button>` : ''}
     ${canRequestDone ? `<button class="btn success" onclick="markDone(${t.id})">标记执行完成</button>` : ''}
+    ${canReturn ? `<button class="btn danger" onclick="returnTask(${t.id})">退回任务</button>` : ''}
     ${canConfirmDone ? `<button class="btn success" onclick="confirmCompletion(${t.id})">确认完成</button>` : ''}
     ${waitingButton}
     <button class="btn ghost" data-close>关闭</button>`;
@@ -967,6 +982,39 @@ function markDone(id) {
 }
 window.markDone = markDone;
 
+function returnTask(id) {
+  const t = state.tasks.find((task) => task.id === id);
+  $('#returnTaskInfo').innerHTML = t
+    ? `<b>T${String(t.id).padStart(4, '0')} · ${esc(t.title)}</b>
+       <div class="cell-sub" style="margin-top:4px">发布者 ${esc(t.creator_name)}　·　执行人 ${esc(t.assignee_name)}</div>`
+    : `<b>任务 T${String(id).padStart(4, '0')}</b>`;
+  $('#returnReason').value = '';
+  $('#btnConfirmReturn').dataset.taskId = id;
+  openModal('#returnModal');
+  $('#returnReason').focus();
+}
+window.returnTask = returnTask;
+
+$('#btnConfirmReturn').addEventListener('click', async () => {
+  const id = $('#btnConfirmReturn').dataset.taskId;
+  const reason = $('#returnReason').value.trim();
+  if (!reason) return toast('请填写退回理由', 'err');
+
+  const button = $('#btnConfirmReturn');
+  button.disabled = true;
+  try {
+    await api(`/api/tasks/${id}/return`, { method: 'POST', body: { reason } });
+    toast('任务已退回给发布者', 'ok');
+    closeModal('#returnModal');
+    closeModal('#detailModal');
+    runAsync(() => refresh(), '任务列表刷新失败');
+  } catch (error) {
+    toast(error.message, 'err');
+  } finally {
+    button.disabled = false;
+  }
+});
+
 $('#btnConfirmDone').addEventListener('click', async () => {
   const id = $('#btnConfirmDone').dataset.taskId;
   const btn = $('#btnConfirmDone');
@@ -1032,6 +1080,17 @@ async function reopenTask(id) {
   } catch (e) { toast(e.message, 'err'); }
 }
 window.reopenTask = reopenTask;
+
+async function redispatchTask(id) {
+  if (!await askConfirm('重新派发后任务将恢复为执行中，执行人可以继续处理。', '重新派发任务', '确认重新派发')) return;
+  try {
+    await api('/api/tasks/' + id, { method: 'PATCH', body: { status: 'in_progress' } });
+    toast('任务已重新派发', 'ok');
+    closeModal('#detailModal');
+    runAsync(() => refresh(), '任务列表刷新失败');
+  } catch (error) { toast(error.message, 'err'); }
+}
+window.redispatchTask = redispatchTask;
 
 async function removeTask(id) {
   if (!await askConfirm('任务及其附件将被一并删除，删除后不可恢复。', '删除任务', '确认删除')) return;

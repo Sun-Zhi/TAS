@@ -146,13 +146,15 @@ function scopeClause(user) {
 
 function decorate(t) {
   const ms = taskDuration(t);
-  const awaitingConfirmation = t.status === 'in_progress' && Boolean(t.completion_requested_at);
+  const returned = t.status === 'in_progress' && Boolean(t.returned_at);
+  const awaitingConfirmation = t.status === 'in_progress' && !returned && Boolean(t.completion_requested_at);
   const overdue =
-    t.status === 'in_progress' && !awaitingConfirmation && t.due_at && new Date(t.due_at).getTime() < Date.now();
+    t.status === 'in_progress' && !returned && !awaitingConfirmation && t.due_at && new Date(t.due_at).getTime() < Date.now();
   return {
     ...t,
     duration_ms: ms,
     duration_text: ms == null ? '' : humanDuration(ms),
+    returned,
     awaiting_confirmation: awaitingConfirmation,
     overdue: !!overdue,
   };
@@ -170,9 +172,13 @@ router.get('/', requireLogin, (req, res) => {
   where.push(sc.sql);
   args.push(...sc.args);
   if (status === 'pending_confirmation') {
-    where.push("t.status = 'in_progress' AND t.completion_requested_at IS NOT NULL");
-  } else if (status && ['in_progress', 'completed'].includes(status)) {
-    where.push('t.status = ?'); args.push(status);
+    where.push("t.status = 'in_progress' AND t.returned_at IS NULL AND t.completion_requested_at IS NOT NULL");
+  } else if (status === 'returned') {
+    where.push("t.status = 'in_progress' AND t.returned_at IS NOT NULL");
+  } else if (status === 'in_progress') {
+    where.push("t.status = 'in_progress' AND t.returned_at IS NULL");
+  } else if (status === 'completed') {
+    where.push("t.status = 'completed'");
   }
   if (assignee_id) { where.push('t.assignee_id = ?'); args.push(Number(assignee_id)); }
   if (creator_id)  { where.push('t.creator_id = ?');  args.push(Number(creator_id)); }
@@ -198,6 +204,7 @@ router.get('/', requireLogin, (req, res) => {
 
   const sql = `${BASE_SELECT} WHERE ${where.join(' AND ')}
     ORDER BY CASE t.status WHEN 'in_progress' THEN 0 ELSE 1 END,
+             CASE WHEN t.returned_at IS NOT NULL AND t.status='in_progress' THEN 0 ELSE 1 END,
              CASE WHEN t.completion_requested_at IS NOT NULL AND t.status='in_progress' THEN 0 ELSE 1 END,
              CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
              t.created_at DESC
@@ -318,6 +325,9 @@ function authorizeCompletionRequest(req, res, next) {
   if (task.completion_requested_at) {
     return res.status(409).json({ error: '该任务已提交完成申请，请等待发布者确认' });
   }
+  if (task.returned_at) {
+    return res.status(409).json({ error: '该任务已退回，请等待发布者重新派发' });
+  }
   req.completionTask = task;
   next();
 }
@@ -349,6 +359,45 @@ router.post('/:id/completion-request', requireLogin, authorizeCompletionRequest,
   res.json({ ok: true, attachment_count: attachmentCount, requested_at: requestedAt });
 });
 
+/* ---------------- 执行者退回任务 ---------------- */
+
+router.post('/:id/return', requireLogin, (req, res) => {
+  const id = Number(req.params.id);
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  if (!task) return res.status(404).json({ error: '任务不存在' });
+  if (req.user.role !== 'executor' || task.assignee_id !== req.user.id) {
+    return res.status(403).json({ error: '只有任务接收者可以退回任务' });
+  }
+  if (task.status === 'completed') return res.status(400).json({ error: '已完成任务不能退回' });
+  if (task.completion_requested_at) {
+    return res.status(409).json({ error: '任务正在等待完成确认，不能退回' });
+  }
+  if (task.returned_at) return res.status(409).json({ error: '该任务已经退回' });
+
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: '请填写退回理由' });
+  if (reason.length > 1000) return res.status(400).json({ error: '退回理由不能超过 1000 个字符' });
+
+  const returnedAt = nowISO();
+  try {
+    runInTransaction(() => {
+      const update = db.prepare(
+        "UPDATE tasks SET returned_at = ?, return_reason = ?, completion_requested_at = NULL, completion_request_note = '' WHERE id = ? AND status = 'in_progress' AND returned_at IS NULL AND completion_requested_at IS NULL"
+      ).run(returnedAt, reason, id);
+      if (update.changes !== 1) {
+        const conflict = new Error('该任务状态已变化，请刷新后重试');
+        conflict.status = 409;
+        throw conflict;
+      }
+      log(id, req.user.id, 'return', `退回任务：${reason}`);
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || '退回任务失败' });
+  }
+
+  res.json({ ok: true, returned_at: returnedAt });
+});
+
 /* ---------------- 编辑任务 ---------------- */
 
 router.patch('/:id', requireLogin, (req, res) => {
@@ -371,18 +420,22 @@ router.patch('/:id', requireLogin, (req, res) => {
       if (task.status === 'completed') return res.status(400).json({ error: '该任务已完成' });
       if (!task.completion_requested_at) return res.status(400).json({ error: '执行人尚未提交完成申请' });
       const ts = nowISO();
-      db.prepare("UPDATE tasks SET status='completed', completed_at=?, result_note=? WHERE id=?")
+      db.prepare("UPDATE tasks SET status='completed', completed_at=?, result_note=?, returned_at=NULL, return_reason='' WHERE id=?")
         .run(ts, String(task.completion_request_note || '').trim(), id);
       const ms = new Date(ts).getTime() - new Date(task.created_at).getTime();
       log(id, u.id, 'complete_confirm', `发布者确认完成，耗时 ${humanDuration(ms)}`);
       return res.json({ ok: true, duration_text: humanDuration(ms) });
     }
-    // 重新打开
+    // 重新打开已完成任务，或重新派发已退回任务。
     if (!isOwner) return res.status(403).json({ error: '只有管理员或任务创建者可以重新开启任务' });
+    if (task.status === 'in_progress' && !task.returned_at) {
+      return res.status(400).json({ error: '该任务已经在执行中' });
+    }
     db.prepare(
-      "UPDATE tasks SET status='in_progress', completed_at=NULL, result_note='', completion_requested_at=NULL, completion_request_note='' WHERE id=?"
+      "UPDATE tasks SET status='in_progress', completed_at=NULL, result_note='', completion_requested_at=NULL, completion_request_note='', returned_at=NULL, return_reason='' WHERE id=?"
     ).run(id);
-    log(id, u.id, 'reopen', '任务被重新开启');
+    const redispatch = Boolean(task.returned_at);
+    log(id, u.id, redispatch ? 'redispatch' : 'reopen', redispatch ? '退回任务被重新派发' : '任务被重新开启');
     return res.json({ ok: true });
   }
 

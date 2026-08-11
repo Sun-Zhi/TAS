@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>工作台 · 任务分配系统</title>
-<link rel="stylesheet" href="/css/style.css?v=20260811-6">
+<link rel="stylesheet" href="/css/style.css?v=20260811-7">
 </head>
 <body>
 
@@ -52,6 +52,7 @@
         <button data-status="" class="on">全部</button>
         <button data-status="in_progress">执行中</button>
         <button data-status="pending_confirmation">待确认</button>
+        <button data-status="returned">已退回</button>
         <button data-status="completed">已完成</button>
       </div>
       <select class="input" id="fAssignee"><option value="">全部执行者</option></select>
@@ -267,6 +268,25 @@
   </div>
 </div>
 
+<!-- ============ 退回任务弹窗 ============ -->
+<div class="modal-mask" id="returnModal" aria-hidden="true">
+  <div class="modal" style="max-width:480px" role="dialog" aria-modal="true" aria-labelledby="returnModalTitle">
+    <div class="modal-head"><h3 id="returnModalTitle">退回任务</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
+    <div class="modal-body">
+      <div id="returnTaskInfo" class="done-task-info"></div>
+      <div class="field">
+        <label for="returnReason">退回理由 <span class="req">*</span></label>
+        <textarea class="input" id="returnReason" maxlength="1000" placeholder="请说明无法接收或执行该任务的原因" required></textarea>
+        <div class="hint">退回后，任务发布者或管理员可以修改任务并重新派发。</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close>取消</button>
+      <button class="btn danger" id="btnConfirmReturn">确认退回</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ 改密码弹窗 ============ -->
 <div class="modal-mask" id="pwdModal" aria-hidden="true">
   <div class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="pwdModalTitle">
@@ -297,6 +317,7 @@
         <select class="input" id="exStatus">
           <option value="">全部状态</option>
           <option value="in_progress">仅执行中</option>
+          <option value="returned">仅已退回</option>
           <option value="completed">仅已完成</option>
         </select>
       </div>
@@ -326,6 +347,6 @@
 </div>
 
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="/js/app.js?v=20260811-6"></script>
+<script src="/js/app.js?v=20260811-7"></script>
 </body>
 </html>

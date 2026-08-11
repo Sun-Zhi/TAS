@@ -12,6 +12,7 @@ const { BASE_SELECT, scopeClause, decorate } = taskRoutes;
 const SCREEN_SELECT = `
   SELECT t.id, t.title, t.category, t.priority, t.status, t.assignee_id,
          t.due_at, t.created_at, t.completed_at, t.completion_requested_at,
+         t.returned_at, t.return_reason,
          au.name AS assignee_name, au.dept AS assignee_dept
   FROM tasks t JOIN users au ON au.id = t.assignee_id
 `;
@@ -30,9 +31,10 @@ router.get('/screen', requireLogin, (req, res) => {
 
   const summaryRow = db.prepare(`
     SELECT COUNT(*) AS total,
-           SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN status='in_progress' AND returned_at IS NULL THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN status='in_progress' AND returned_at IS NOT NULL THEN 1 ELSE 0 END) AS returned,
            SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS done,
-           SUM(CASE WHEN status='in_progress' AND completion_requested_at IS NULL AND due_at IS NOT NULL AND due_at < ? THEN 1 ELSE 0 END) AS overdue,
+           SUM(CASE WHEN status='in_progress' AND returned_at IS NULL AND completion_requested_at IS NULL AND due_at IS NOT NULL AND due_at < ? THEN 1 ELSE 0 END) AS overdue,
            SUM(CASE WHEN status='completed' AND completed_at >= ? THEN 1 ELSE 0 END) AS done_today,
            SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS created_today,
            AVG(CASE WHEN status='completed' AND completed_at IS NOT NULL
@@ -43,7 +45,7 @@ router.get('/screen', requireLogin, (req, res) => {
   `).get(now, todayISO, todayISO);
 
   const running = db.prepare(`${SCREEN_SELECT}
-    WHERE t.status='in_progress'
+    WHERE t.status='in_progress' AND t.returned_at IS NULL
     ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
              t.created_at DESC LIMIT 60`).all().map(decorate);
   const done = db.prepare(`${SCREEN_SELECT}
@@ -53,9 +55,10 @@ router.get('/screen', requireLogin, (req, res) => {
   // 执行者维度统计
   const executors = db.prepare(`
     SELECT u.id, u.name, u.dept, COUNT(t.id) AS total,
-           SUM(CASE WHEN t.status='in_progress' THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NULL THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NOT NULL THEN 1 ELSE 0 END) AS returned,
            SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS done,
-           SUM(CASE WHEN t.status='in_progress' AND t.completion_requested_at IS NULL AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
+           SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NULL AND t.completion_requested_at IS NULL AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
            AVG(CASE WHEN t.status='completed' AND t.completed_at IS NOT NULL
                     THEN (julianday(t.completed_at)-julianday(t.created_at))*86400000 END) AS avg_ms
       FROM users u JOIN tasks t ON t.assignee_id = u.id
@@ -63,7 +66,7 @@ router.get('/screen', requireLogin, (req, res) => {
      ORDER BY total DESC, done DESC
   `).all(now).map((e) => ({
     id: e.id, name: e.name, dept: e.dept || '', total: Number(e.total),
-    running: Number(e.running), done: Number(e.done), overdue: Number(e.overdue),
+    running: Number(e.running), returned: Number(e.returned), done: Number(e.done), overdue: Number(e.overdue),
     rate: e.total ? Math.round((Number(e.done) / Number(e.total)) * 100) : 0,
     avg_duration_text: durationText(e.avg_ms),
   }));
@@ -105,6 +108,7 @@ router.get('/screen', requireLogin, (req, res) => {
     summary: {
       total,
       running: Number(summaryRow.running || 0),
+      returned: Number(summaryRow.returned || 0),
       done: doneCount,
       overdue: Number(summaryRow.overdue || 0),
       done_today: Number(summaryRow.done_today || 0),
@@ -128,10 +132,11 @@ router.get('/overview', requireLogin, (req, res) => {
   const now = new Date().toISOString();
   const row = db.prepare(`
     SELECT COUNT(*) AS total,
-           SUM(CASE WHEN t.status='in_progress' THEN 1 ELSE 0 END) AS running,
-           SUM(CASE WHEN t.status='in_progress' AND t.completion_requested_at IS NOT NULL THEN 1 ELSE 0 END) AS pending_confirmation,
+           SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NULL THEN 1 ELSE 0 END) AS running,
+           SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NOT NULL THEN 1 ELSE 0 END) AS returned,
+           SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NULL AND t.completion_requested_at IS NOT NULL THEN 1 ELSE 0 END) AS pending_confirmation,
            SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS done,
-           SUM(CASE WHEN t.status='in_progress' AND t.completion_requested_at IS NULL AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
+           SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NULL AND t.completion_requested_at IS NULL AND t.due_at IS NOT NULL AND t.due_at < ? THEN 1 ELSE 0 END) AS overdue,
            AVG(CASE WHEN t.status='completed' AND t.completed_at IS NOT NULL
                     THEN (julianday(t.completed_at)-julianday(t.created_at))*86400000 END) AS avg_ms
       FROM tasks t WHERE ${sc.sql}
@@ -140,6 +145,7 @@ router.get('/overview', requireLogin, (req, res) => {
     total: Number(row.total || 0),
     running: Number(row.running || 0),
     pending_confirmation: Number(row.pending_confirmation || 0),
+    returned: Number(row.returned || 0),
     done: Number(row.done || 0),
     overdue: Number(row.overdue || 0),
     avg_duration_text: durationText(row.avg_ms),
@@ -171,7 +177,9 @@ router.get('/export', requireLogin, (req, res) => {
     who = req.user.name;
   }
 
-  if (status && ['in_progress', 'completed'].includes(status)) { where.push('t.status = ?'); args.push(status); }
+  if (status === 'returned') where.push("t.status = 'in_progress' AND t.returned_at IS NOT NULL");
+  else if (status === 'in_progress') where.push("t.status = 'in_progress' AND t.returned_at IS NULL");
+  else if (status === 'completed') where.push("t.status = 'completed'");
   if (category) { where.push('t.category = ?'); args.push(String(category)); }
 
   const rows = db
@@ -184,7 +192,7 @@ router.get('/export', requireLogin, (req, res) => {
     t.title,
     t.category,
     PRIORITY_TEXT[t.priority] || t.priority,
-    t.awaiting_confirmation ? '等待发布者确认' : (STATUS_TEXT[t.status] || t.status),
+    t.returned ? '已退回' : t.awaiting_confirmation ? '等待发布者确认' : (STATUS_TEXT[t.status] || t.status),
     t.assignee_name,
     t.assignee_username,
     t.assignee_dept || '',
