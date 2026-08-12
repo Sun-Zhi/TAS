@@ -23,13 +23,8 @@ function durationText(ms) {
 
 /* ---------------- 大屏数据 ---------------- */
 
-router.get('/screen', requireLogin, (req, res) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayISO = today.toISOString();
-  const now = new Date().toISOString();
-
-  const summaryRow = db.prepare(`
+function buildScreenSummary(nowIso, todayIso) {
+  const row = db.prepare(`
     SELECT COUNT(*) AS total,
            SUM(CASE WHEN status='in_progress' AND returned_at IS NULL THEN 1 ELSE 0 END) AS running,
            SUM(CASE WHEN status='in_progress' AND returned_at IS NOT NULL THEN 1 ELSE 0 END) AS returned,
@@ -42,18 +37,41 @@ router.get('/screen', requireLogin, (req, res) => {
            MIN(CASE WHEN status='completed' AND completed_at IS NOT NULL
                     THEN (julianday(completed_at)-julianday(created_at))*86400000 END) AS fastest_ms
       FROM tasks
-  `).get(now, todayISO, todayISO);
+  `).get(nowIso, todayIso, todayIso);
+  const total = Number(row.total || 0);
+  const done = Number(row.done || 0);
+  return {
+    total,
+    running: Number(row.running || 0),
+    returned: Number(row.returned || 0),
+    done,
+    overdue: Number(row.overdue || 0),
+    done_today: Number(row.done_today || 0),
+    created_today: Number(row.created_today || 0),
+    complete_rate: total ? Math.round((done / total) * 100) : 0,
+    avg_duration_text: durationText(row.avg_ms),
+    fastest_duration_text: durationText(row.fastest_ms),
+  };
+}
 
+function buildScreenTaskLists(isExecutor, userId) {
+  const userArgs = isExecutor ? [userId] : [];
+  const whereUser = isExecutor ? ' AND t.assignee_id = ?' : '';
   const running = db.prepare(`${SCREEN_SELECT}
-    WHERE t.status='in_progress' AND t.returned_at IS NULL
+    WHERE t.status='in_progress' AND t.returned_at IS NULL${whereUser}
     ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
-             t.created_at DESC LIMIT 60`).all().map(decorate);
+             t.created_at DESC LIMIT 60`).all(...userArgs).map(decorate);
   const done = db.prepare(`${SCREEN_SELECT}
-    WHERE t.status='completed'
-    ORDER BY t.completed_at DESC LIMIT 60`).all().map(decorate);
+    WHERE t.status='completed'${whereUser}
+    ORDER BY t.completed_at DESC LIMIT 60`).all(...userArgs).map(decorate);
+  return { running, done };
+}
 
-  // 执行者维度统计
-  const executors = db.prepare(`
+function buildScreenExecutors(isExecutor, userId, nowIso) {
+  // 仅统计实际承担过任务的执行者：不显示管理员、发布者，也不显示 0 任务的空记录。
+  // executor 访问大屏时仍只保留自己这一行。
+  const executorWhere = isExecutor ? ' AND u.id = ?' : '';
+  const rows = db.prepare(`
     SELECT u.id, u.name, u.dept, COUNT(t.id) AS total,
            SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NULL THEN 1 ELSE 0 END) AS running,
            SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NOT NULL THEN 1 ELSE 0 END) AS returned,
@@ -62,25 +80,29 @@ router.get('/screen', requireLogin, (req, res) => {
            AVG(CASE WHEN t.status='completed' AND t.completed_at IS NOT NULL
                     THEN (julianday(t.completed_at)-julianday(t.created_at))*86400000 END) AS avg_ms
       FROM users u JOIN tasks t ON t.assignee_id = u.id
+      WHERE u.role = 'executor'${executorWhere}
      GROUP BY u.id, u.name, u.dept
-     ORDER BY total DESC, done DESC
-  `).all(now).map((e) => ({
+     ${isExecutor ? '' : 'ORDER BY total DESC, done DESC'}
+  `).all(...(isExecutor ? [nowIso, userId] : [nowIso]));
+  return rows.map((e) => ({
     id: e.id, name: e.name, dept: e.dept || '', total: Number(e.total),
     running: Number(e.running), returned: Number(e.returned), done: Number(e.done), overdue: Number(e.overdue),
     rate: e.total ? Math.round((Number(e.done) / Number(e.total)) * 100) : 0,
     avg_duration_text: durationText(e.avg_ms),
   }));
+}
 
-  // 类别分布
-  const categories = db.prepare(`
+function buildScreenCategories() {
+  return db.prepare(`
     SELECT COALESCE(NULLIF(category, ''), '常规任务') AS category,
            COUNT(*) AS total,
            SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS done
       FROM tasks GROUP BY COALESCE(NULLIF(category, ''), '常规任务')
      ORDER BY total DESC
   `).all().map((c) => ({ category: c.category, total: Number(c.total), done: Number(c.done) }));
+}
 
-  // 近 7 天完成趋势
+function buildScreenTrend() {
   const dayRanges = [];
   for (let i = 6; i >= 0; i--) {
     const day = new Date();
@@ -94,29 +116,31 @@ router.get('/screen', requireLogin, (req, res) => {
   const recent = db.prepare(
     'SELECT created_at, completed_at FROM tasks WHERE created_at >= ? OR completed_at >= ?'
   ).all(since, since);
-  const trend = dayRanges.map(({ day, next }) => ({
+  return dayRanges.map(({ day, next }) => ({
     date: `${day.getMonth() + 1}/${day.getDate()}`,
     done: recent.filter((t) => t.completed_at && new Date(t.completed_at) >= day && new Date(t.completed_at) < next).length,
     created: recent.filter((t) => new Date(t.created_at) >= day && new Date(t.created_at) < next).length,
   }));
+}
 
-  const total = Number(summaryRow.total || 0);
-  const doneCount = Number(summaryRow.done || 0);
+router.get('/screen', requireLogin, (req, res) => {
+  // 大屏按角色控制可见性：executor 只看自己作为 assignee 的任务明细；
+  // admin/assigner 看全公司。聚合数字（summary/categories/trend）对所有角色可见，不含个人隐私。
+  const isExecutor = req.user.role === 'executor';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayISO = today.toISOString();
+  const nowISO = new Date().toISOString();
+
+  const summary = buildScreenSummary(nowISO, todayISO);
+  const { running, done } = buildScreenTaskLists(isExecutor, req.user.id);
+  const executors = buildScreenExecutors(isExecutor, req.user.id, nowISO);
+  const categories = buildScreenCategories();
+  const trend = buildScreenTrend();
 
   res.json({
-    updated_at: new Date().toISOString(),
-    summary: {
-      total,
-      running: Number(summaryRow.running || 0),
-      returned: Number(summaryRow.returned || 0),
-      done: doneCount,
-      overdue: Number(summaryRow.overdue || 0),
-      done_today: Number(summaryRow.done_today || 0),
-      created_today: Number(summaryRow.created_today || 0),
-      complete_rate: total ? Math.round((doneCount / total) * 100) : 0,
-      avg_duration_text: durationText(summaryRow.avg_ms),
-      fastest_duration_text: durationText(summaryRow.fastest_ms),
-    },
+    updated_at: nowISO,
+    summary,
     running,
     done,
     executors,

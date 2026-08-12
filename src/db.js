@@ -155,7 +155,17 @@ function nowISO() {
   return new Date().toISOString();
 }
 
+/** 仅 1/true/yes 视为启用；'0'、空字符串、空格等其他值一律视为关闭 */
+function isTruthyEnv(value) {
+  return /^(1|true|yes)$/i.test(String(value || '').trim());
+}
+
 function seed() {
+  // 生产环境禁止启用演示账号：5 个公开账号 + 弱口令 = 远程直接登录
+  if (isTruthyEnv(process.env.ENABLE_DEMO_ACCOUNTS) && process.env.NODE_ENV === 'production') {
+    console.error('[fatal] 演示账号不能在生产环境开启（口令为弱口令 123456）');
+    process.exit(1);
+  }
   const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (count > 0) return;
 
@@ -167,13 +177,18 @@ function seed() {
   const configuredAdminPassword = process.env.ADMIN_PASSWORD;
   const adminPassword = configuredAdminPassword || crypto.randomBytes(24).toString('base64url');
   const seeds = [['admin', adminPassword, '系统管理员', 'admin', '信息中心']];
-  if (/^(1|true|yes)$/i.test(process.env.ENABLE_DEMO_ACCOUNTS || '')) {
+  if (isTruthyEnv(process.env.ENABLE_DEMO_ACCOUNTS)) {
+    // 演示账号口令从环境变量读取，未设置时随机生成并一次性打印——避免硬编码弱口令
+    const demoPassword = process.env.DEMO_PASSWORD || crypto.randomBytes(12).toString('base64url');
+    if (!process.env.DEMO_PASSWORD) {
+      console.warn(`[db] 演示账号本次启动口令（请立即记录，重启后失效）：${demoPassword}`);
+    }
     seeds.push(
-      ['pm01',  '123456', '张明（产品）', 'assigner', '产品部'],
-      ['pm02',  '123456', '李婷（运营）', 'assigner', '运营部'],
-      ['dev01', '123456', '王强',        'executor', '研发一组'],
-      ['dev02', '123456', '赵磊',        'executor', '研发二组'],
-      ['ops01', '123456', '陈静',        'executor', '交付部']
+      ['pm01',  demoPassword, '张明（产品）', 'assigner', '产品部'],
+      ['pm02',  demoPassword, '李婷（运营）', 'assigner', '运营部'],
+      ['dev01', demoPassword, '王强',        'executor', '研发一组'],
+      ['dev02', demoPassword, '赵磊',        'executor', '研发二组'],
+      ['ops01', demoPassword, '陈静',        'executor', '交付部']
     );
   }
   for (const [username, pwd, name, role, dept] of seeds) {
@@ -189,4 +204,7 @@ function seed() {
 
 seed();
 
-module.exports = { db, hashPassword, verifyPassword, verifyPasswordAsync, nowISO, UPLOAD_DIR, DATA_DIR, ROOT };
+// 固定 dummy hash：用于账号不存在时跑一次 scrypt 校验抹平时序差，防止枚举攻击
+const DUMMY_HASH = hashPassword(crypto.randomBytes(24).toString('hex'));
+
+module.exports = { db, hashPassword, verifyPassword, verifyPasswordAsync, nowISO, UPLOAD_DIR, DATA_DIR, ROOT, DUMMY_HASH };

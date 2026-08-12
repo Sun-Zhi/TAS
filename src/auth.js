@@ -83,10 +83,26 @@ function requireRole(...roles) {
   };
 }
 
+/** 是否给登录 Cookie 打 Secure 标记。
+ *  默认安全（不打 Secure）—— 局域网 HTTP 部署友好，浏览器才能回传 Cookie。
+ *  需要 Secure 时显式开启：
+ *    1. SECURE_COOKIES=1/true/yes
+ *    2. BASE_URL 以 https:// 开头（说明部署在 HTTPS 反代后）
+ *  生产环境未启用 Secure 时打 warn 提示，避免被遗忘；
+ *  dev 环境则静默通过。
+ */
+function isCookieSecure() {
+  if (/^(1|true|yes)$/i.test(process.env.SECURE_COOKIES || '')) return true;
+  if (/^https:\/\//i.test(process.env.BASE_URL || '')) return true;
+  return false;
+}
+
 function setAuthCookie(res, token, expires) {
-  const secure = process.env.NODE_ENV === 'production' ||
-    /^(1|true|yes)$/i.test(process.env.SECURE_COOKIES || '') ||
-    /^https:\/\//i.test(process.env.BASE_URL || '');
+  if (process.env.NODE_ENV === 'production' && !isCookieSecure()) {
+    console.warn('[auth] 生产环境未启用 Secure Cookie（SECURE_COOKIES=1 或 BASE_URL=https://）：' +
+      'Cookie 可能在明文 HTTP 下被窃听，请确认部署形态后调整。');
+  }
+  const secure = isCookieSecure();
   res.setHeader(
     'Set-Cookie',
     `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}${secure ? '; Secure' : ''}`
@@ -94,9 +110,7 @@ function setAuthCookie(res, token, expires) {
 }
 
 function clearAuthCookie(res) {
-  const secure = process.env.NODE_ENV === 'production' ||
-    /^(1|true|yes)$/i.test(process.env.SECURE_COOKIES || '') ||
-    /^https:\/\//i.test(process.env.BASE_URL || '');
+  const secure = isCookieSecure();
   res.setHeader(
     'Set-Cookie',
     `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`

@@ -45,6 +45,141 @@ function esc(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/* ---------------- 圆角下拉组件 ---------------- */
+// 原生 select / datalist 的展开层不能可靠设置圆角与配色；保留原控件作状态源，
+// 以项目自绘的深色圆角菜单承载交互。
+const roundSelects = new Set();
+
+function enhanceSelect(select) {
+  if (!select || select.dataset.roundSelectReady) return;
+  select.dataset.roundSelectReady = '1';
+  const wrap = document.createElement('div');
+  wrap.className = 'round-select';
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'round-select-trigger';
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  const menu = document.createElement('div');
+  menu.className = 'round-select-menu';
+  menu.setAttribute('role', 'listbox');
+  menu.hidden = true;
+  select.parentNode.insertBefore(wrap, select);
+  wrap.append(select, trigger);
+  document.body.append(menu);
+  select.classList.add('native-select');
+
+  const positionMenu = () => {
+    const rect = trigger.getBoundingClientRect();
+    const gap = 6;
+    menu.style.width = `${Math.round(rect.width)}px`;
+    menu.style.left = `${Math.round(rect.left)}px`;
+    const below = window.innerHeight - rect.bottom - gap;
+    const above = rect.top - gap;
+    const placeAbove = menu.offsetHeight > below && above > below;
+    menu.style.top = `${Math.round(placeAbove ? Math.max(8, rect.top - menu.offsetHeight - gap) : rect.bottom + gap)}px`;
+  };
+
+  const close = () => {
+    wrap.classList.remove('open');
+    trigger.setAttribute('aria-expanded', 'false');
+    menu.hidden = true;
+  };
+  const render = () => {
+    const options = Array.from(select.options);
+    const current = select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
+    trigger.textContent = current ? current.textContent : (select.dataset.placeholder || '请选择');
+    trigger.disabled = select.disabled;
+    menu.replaceChildren();
+    options.forEach((option, index) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = `round-select-option${option.selected ? ' selected' : ''}`;
+      item.textContent = option.textContent;
+      item.disabled = option.disabled;
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', String(option.selected));
+      item.addEventListener('click', () => {
+        select.selectedIndex = index;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        render(); close(); trigger.focus();
+      });
+      menu.append(item);
+    });
+  };
+  trigger.addEventListener('click', () => {
+    const opening = menu.hidden;
+    document.querySelectorAll('.round-select.open').forEach((el) => el._roundClose?.());
+    if (opening) { render(); wrap.classList.add('open'); trigger.setAttribute('aria-expanded', 'true'); menu.hidden = false; positionMenu(); }
+  });
+  trigger.addEventListener('keydown', (event) => { if (event.key === 'Escape') close(); });
+  select.addEventListener('change', render);
+  const observer = new MutationObserver(render);
+  observer.observe(select, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'selected'] });
+  wrap._roundClose = close;
+  select._roundRender = render;
+  const label = document.querySelector(`label[for="${CSS.escape(select.id)}"]`);
+  if (label) label.addEventListener('click', (event) => { event.preventDefault(); trigger.focus(); trigger.click(); });
+  roundSelects.add(select);
+  render();
+}
+
+function syncRoundSelects() { roundSelects.forEach((select) => select._roundRender?.()); }
+
+function initCategoryCombo() {
+  const input = $('#tfCategory');
+  const dataList = $('#catList');
+  if (!input || !dataList || input.dataset.roundComboReady) return;
+  input.dataset.roundComboReady = '1';
+  input.removeAttribute('list');
+  const wrap = document.createElement('div');
+  wrap.className = 'round-combo';
+  const menu = document.createElement('div');
+  menu.className = 'round-combo-menu';
+  menu.setAttribute('role', 'listbox');
+  menu.hidden = true;
+  input.parentNode.insertBefore(wrap, input);
+  wrap.append(input);
+  document.body.append(menu);
+  const close = () => { menu.hidden = true; };
+  const render = () => {
+    const keyword = input.value.trim().toLowerCase();
+    const values = Array.from(dataList.options).map((option) => option.value)
+      .filter((value) => value && value.toLowerCase().includes(keyword));
+    menu.replaceChildren();
+    if (!values.length) {
+      const empty = document.createElement('div');
+      empty.className = 'round-combo-empty'; empty.textContent = '暂无匹配类别'; menu.append(empty);
+    } else values.forEach((value) => {
+      const item = document.createElement('button');
+      item.type = 'button'; item.className = 'round-combo-option'; item.textContent = value;
+      item.addEventListener('mousedown', (event) => {
+        event.preventDefault(); input.value = value;
+        input.dispatchEvent(new Event('change', { bubbles: true })); close();
+      });
+      menu.append(item);
+    });
+    menu.hidden = false;
+    const rect = input.getBoundingClientRect();
+    const gap = 4;
+    menu.style.width = `${Math.round(rect.width)}px`;
+    menu.style.left = `${Math.round(rect.left)}px`;
+    const below = window.innerHeight - rect.bottom - gap;
+    const above = rect.top - gap;
+    menu.style.top = `${Math.round(menu.offsetHeight > below && above > below
+      ? Math.max(8, rect.top - menu.offsetHeight - gap) : rect.bottom + gap)}px`;
+  };
+  input.addEventListener('focus', render);
+  input.addEventListener('input', render);
+  input.addEventListener('keydown', (event) => { if (event.key === 'Escape') close(); });
+  input.addEventListener('blur', () => setTimeout(close, 120));
+}
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.round-select, .round-select-menu')) document.querySelectorAll('.round-select.open').forEach((el) => el._roundClose?.());
+  if (!event.target.closest('.round-combo, .round-combo-menu')) document.querySelectorAll('.round-combo-menu').forEach((menu) => { menu.hidden = true; });
+});
+
 function fmt(iso, withTime = true) {
   if (!iso) return '-';
   const d = new Date(iso);
@@ -213,14 +348,17 @@ function initDuePicker() {
   picker.addEventListener('click', (e) => e.stopPropagation());
   picker.addEventListener('keydown', (e) => {
     if (e.key !== 'Tab') return;
-    const focusable = Array.from(picker.querySelectorAll('button:not([disabled]):not([tabindex="-1"]), select:not([disabled])'))
+    const focusable = Array.from(picker.querySelectorAll('button:not([disabled]):not([tabindex="-1"])'))
       .filter((el) => el.offsetParent !== null);
     if (!focusable.length) return;
     const first = focusable[0], last = focusable[focusable.length - 1];
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   });
-  document.addEventListener('click', () => closeDuePicker());
+  document.addEventListener('click', (event) => {
+    // 自绘时间下拉菜单挂在 body，点击其选项不应误判为点击日历外部。
+    if (!event.target.closest('#tfDuePicker, .round-select-menu')) closeDuePicker();
+  });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && duePicker.open) {
       closeDuePicker();
@@ -405,6 +543,7 @@ function syncDueTimeInputs() {
   });
   hourSelect.value = duePicker.hour;
   minuteSelect.value = duePicker.minute;
+  syncRoundSelects();
 }
 
 function renderDuePicker(restoreFocus = false) {
@@ -494,7 +633,7 @@ function openModal(id) {
   mask.classList.add('show');
   mask.setAttribute('aria-hidden', 'false');
   requestAnimationFrame(() => {
-    const target = mask.querySelector('[autofocus], input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])');
+    const target = mask.querySelector('[autofocus], input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), .round-select-trigger:not([disabled]), button:not([disabled])');
     if (target) target.focus();
   });
 }
@@ -550,7 +689,7 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key !== 'Tab') return;
-  const focusable = $$(`#${mask.id} button:not([disabled]), #${mask.id} input:not([type="hidden"]):not([disabled]), #${mask.id} textarea:not([disabled]), #${mask.id} select:not([disabled]), #${mask.id} a[href]`)
+  const focusable = $$(`#${mask.id} button:not([disabled]), #${mask.id} input:not([type="hidden"]):not([disabled]), #${mask.id} textarea:not([disabled]), #${mask.id} .round-select-trigger:not([disabled]), #${mask.id} a[href]`)
     .filter((el) => el.offsetParent !== null);
   if (!focusable.length) return;
   const first = focusable[0], last = focusable[focusable.length - 1];
@@ -581,7 +720,7 @@ async function init() {
     $('#scopeDesc').textContent = '执行者视角 · 展示派发给我的任务';
   }
   if (me.role === 'admin' || me.role === 'assigner') $('#btnNewTask').style.display = '';
-  if (me.role === 'executor') $('#fAssignee').style.display = 'none';
+  if (me.role === 'executor') $('#fAssignee').closest('.round-select').style.display = 'none';
 
   await loadExecutors();
   await refresh();
@@ -595,6 +734,7 @@ async function loadExecutors() {
   $('#tfAssignee').innerHTML = '<option value="">请选择执行人</option>' + opts;
   $('#fAssignee').innerHTML = '<option value="">全部执行者</option>' + opts;
   $('#exAssignee').innerHTML = '<option value="">全部执行者</option>' + opts;
+  syncRoundSelects();
 }
 
 async function refresh() {
@@ -635,6 +775,7 @@ async function loadCategories() {
   $('#fCategory').innerHTML = '<option value="">全部类别</option>' +
     categories.map((c) => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(c)}</option>`).join('');
   $('#catList').innerHTML = categories.map((c) => `<option value="${esc(c)}">`).join('');
+  syncRoundSelects();
 }
 
 /* ---------------- 任务列表渲染 ---------------- */
@@ -1104,6 +1245,7 @@ async function openTaskEditor(id) {
   $('#tfAssignee').value = t.assignee_id;
   $('#tfCategory').value = t.category;
   $('#tfPriority').value = t.priority;
+  syncRoundSelects();
   setDue(t.due_at);
   $('#tfDue').dataset.original = $('#tfDue').value;
   $('#tfFileField').style.display = 'none';
@@ -1121,6 +1263,7 @@ $('#btnNewTask').addEventListener('click', () => {
   $('#tfDue').dataset.original = '';
   $('#tfId').value = '';
   $('#tfPriority').value = 'normal';
+  syncRoundSelects();
   state.pendingFiles = [];
   renderPendingFiles();
   $('#tfFileField').style.display = '';
@@ -1265,6 +1408,7 @@ $('#fSearch').addEventListener('input', (e) => {
 $('#btnReset').addEventListener('click', () => {
   state.filters = { status: '', assignee_id: '', category: '', q: '' };
   $('#fSearch').value = ''; $('#fAssignee').value = ''; $('#fCategory').value = '';
+  syncRoundSelects();
   $$('#statusSeg button').forEach((x, i) => x.classList.toggle('on', i === 0));
   state.selectedIds.clear();
   runAsync(() => loadTasks(), '任务列表刷新失败');
@@ -1315,6 +1459,7 @@ $('#btnNewUser').addEventListener('click', () => {
   $('#userModalTitle').textContent = '新建用户';
   $('#userForm').reset();
   $('#ufId').value = '';
+  syncRoundSelects();
   $('#ufUsername').disabled = false;
   $('#ufPwdReq').style.display = '';
   $('#ufPwdHint').textContent = '至少 6 位，请告知用户首次登录密码';
@@ -1330,6 +1475,7 @@ window.editUser = (id) => {
   $('#ufUsername').disabled = true;
   $('#ufName').value = u.name;
   $('#ufRole').value = u.role;
+  syncRoundSelects();
   $('#ufDept').value = u.dept || '';
   $('#ufPassword').value = '';
   $('#ufPwdReq').style.display = 'none';
@@ -1471,4 +1617,6 @@ setInterval(() => {
   }
 }, 30000);
 
+$$('select').forEach(enhanceSelect);
+initCategoryCombo();
 runAsync(() => init(), '工作台初始化失败，请刷新页面重试');

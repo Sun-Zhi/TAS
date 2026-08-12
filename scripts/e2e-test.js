@@ -48,6 +48,7 @@ async function startServer() {
       UPLOAD_DIR: path.join(TEST_ROOT, 'uploads'),
       ADMIN_PASSWORD: 'admin123',
       ENABLE_DEMO_ACCOUNTS: '1',
+      DEMO_PASSWORD: '123456',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -220,6 +221,18 @@ async function stopServer() {
   ok(redispatchedDetail.data.logs.some((log) => log.action === 'redispatch_edit'),
     '重新编辑并派发记录保留在历史操作中');
 
+  const uploadDir = path.join(TEST_ROOT, 'uploads');
+  const uploadsBeforeInvalidCompletion = fs.readdirSync(uploadDir).length;
+  const overlongCompletionForm = new FormData();
+  overlongCompletionForm.append('result_note', '超'.repeat(2001));
+  overlongCompletionForm.append('files', new Blob(['不应保留的成果附件'], { type: 'text/plain' }), '超长说明附件.txt');
+  const overlongCompletion = await req('/api/tasks/' + taskId + '/completion-request', {
+    method: 'POST', token: newUserToken, body: overlongCompletionForm,
+  });
+  ok(overlongCompletion.status === 400, '超长完成说明被拒绝');
+  ok(fs.readdirSync(uploadDir).length === uploadsBeforeInvalidCompletion,
+    '超长完成说明会清理已落盘附件');
+
   const completionForm = new FormData();
   completionForm.append('result_note', '评审结论已同步至文档');
   completionForm.append('files', new Blob(['最终评审成果'], { type: 'text/plain' }), '评审成果.txt');
@@ -263,11 +276,17 @@ async function stopServer() {
   await req('/api/tasks/' + taskId, { method: 'PATCH', token: pm, body: { status: 'completed' } });
 
   console.log('\n【6】大屏与统计');
-  const scr = await req('/api/screen', { token: dev });
+  const scr = await req('/api/screen', { token: admin });
   ok(scr.status === 200, '大屏接口可访问');
   ok(typeof scr.data.summary.total === 'number' && scr.data.summary.total > 0, `大屏统计正常（共 ${scr.data.summary.total} 个任务）`);
   ok(Array.isArray(scr.data.running) && Array.isArray(scr.data.done), '大屏返回执行中/已完成两个列表');
-  ok(scr.data.executors.length > 0, '执行者维度统计存在');
+  ok(scr.data.executors.length > 0 && scr.data.executors.every((executor) => executor.total > 0),
+    '执行者分布只显示有任务的人员');
+  ok(scr.data.executors.every((executor) => executor.name !== '系统管理员' && executor.name !== '张明（产品）'),
+    '执行者分布不显示管理员和发布者');
+  const executorScreen = await req('/api/screen', { token: dev });
+  ok(executorScreen.data.executors.length === 0,
+    '无任务的执行者大屏不显示空分布记录');
   ok(scr.data.trend.length === 7, '近 7 日趋势数据完整');
   ok(scr.data.summary.avg_duration_text !== '-', `平均耗时：${scr.data.summary.avg_duration_text}`);
 

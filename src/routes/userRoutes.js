@@ -116,6 +116,8 @@ router.patch('/:id', requireRole('admin'), (req, res) => {
       return res.status(400).json({ error: `该用户尚有 ${pending} 个执行中的任务，无法切换角色` });
     }
     sets.push('role = ?'); args.push(role);
+    // 角色变更必须销毁该用户所有旧 session，防止降级账号沿用旧权限
+    destroyUserSessions(id);
   }
   if (active !== undefined) {
     const val = active ? 1 : 0;

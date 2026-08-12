@@ -59,10 +59,44 @@ body > * { position: relative; z-index: 1; }
 
 a { color: var(--primary2); text-decoration: none; }
 button, input, select, textarea { font-family: inherit; font-size: 14px; }
-/* 统一原生下拉面板为项目深色主题（含日期时间选择器）。 */
-select { color-scheme: dark; }
-select option, select optgroup { background-color: var(--panel-solid); color: var(--text); }
-select option:checked { background-color: var(--primary-dark); color: #fff; }
+/* 原生 select / datalist 的展开层由浏览器绘制，无法可靠控制背景和圆角。
+   页面交互统一转换为 .round-select / .round-combo，自身完全使用项目深色样式。 */
+select.native-select {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  opacity: 0; pointer-events: none; clip: rect(0 0 0 0); clip-path: inset(50%);
+}
+.round-select, .round-combo { position: relative; width: 100%; }
+.round-select-trigger {
+  width: 100%; min-height: 38px; padding: 9px 38px 9px 12px;
+  border: 1px solid var(--border-strong); border-radius: 9px;
+  background: rgba(255,255,255,.04); color: var(--text); cursor: pointer;
+  text-align: left; line-height: 18px; position: relative;
+  transition: border-color .15s, box-shadow .15s, background .15s;
+}
+.round-select-trigger::after {
+  content: ''; position: absolute; right: 13px; top: 50%; width: 0; height: 0;
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 7px solid var(--text-sub); transform: translateY(-30%);
+}
+.round-select.open .round-select-trigger, .round-select-trigger:focus-visible,
+.round-combo .input:focus { border-color: var(--primary2); box-shadow: 0 0 0 3px rgba(49,226,242,.16); background: rgba(255,255,255,.06); outline: none; }
+.round-select-menu, .round-combo-menu {
+  position: fixed; z-index: 340;
+  max-height: 248px; overflow: auto; padding: 5px;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--panel-solid); box-shadow: 0 14px 32px rgba(0,0,0,.38);
+}
+.round-select-menu[hidden], .round-combo-menu[hidden] { display: none; }
+.round-select-option, .round-combo-option {
+  display: block; width: 100%; border: 0; border-radius: 7px; padding: 9px 10px;
+  background: transparent; color: var(--text); cursor: pointer; text-align: left; line-height: 18px;
+}
+.round-select-option:hover, .round-select-option:focus-visible,
+.round-combo-option:hover, .round-combo-option:focus-visible { background: rgba(49,226,242,.13); color: #fff; outline: none; }
+.round-select-option.selected { background: linear-gradient(135deg, rgba(49,126,255,.82), rgba(37,103,225,.82)); color: #fff; }
+.round-select-option:disabled { opacity: .42; cursor: not-allowed; }
+.round-combo-menu { top: calc(100% + 4px); }
+.round-combo-empty { padding: 9px 10px; color: var(--text-mute); font-size: 13px; }
 
 /* ---------- 滚动条 ---------- */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -389,6 +423,7 @@ textarea.input { resize: vertical; min-height: 88px; }
 /* ---------- 筛选栏 ---------- */
 .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
 .filters .input { width: auto; min-width: 130px; }
+.filters .round-select { width: 165px; flex: 0 0 165px; }
 .filters .search { min-width: 220px; }
 .seg { display: inline-flex; background: rgba(255, 255, 255, .05); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
 .seg button {

@@ -23,8 +23,32 @@ const storage = multer.diskStorage({
   },
 });
 
+// 附件白名单：扩展名 + MIME 双重校验，避免 SVG(<script>)、.lnk/.exe 钓鱼/可执行附件
+const ALLOWED_FILE_EXT = new Set(['.txt', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.json', '.csv', '.md']);
+const ALLOWED_FILE_MIME = new Set([
+  'text/plain', 'text/csv', 'text/markdown', 'application/pdf', 'application/json',
+  'application/zip', 'application/x-zip-compressed',
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+  'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]);
+
+function fileFilter(req, file, cb) {
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  const mime = (file.mimetype || '').toLowerCase();
+  if (!ALLOWED_FILE_EXT.has(ext) || !ALLOWED_FILE_MIME.has(mime)) {
+    const err = new Error(`不支持的附件类型（${ext || mime || '未知'}）`);
+    // 自定义 code 加项目前缀，避免与 multer 内置 code 冲突，也避免被业务层误用
+    err.code = 'UPLOAD_UNSUPPORTED_TYPE';
+    return cb(err);
+  }
+  cb(null, true);
+}
+
 const upload = multer({
   storage,
+  fileFilter,
   limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 10 },
 });
 
@@ -336,6 +360,11 @@ router.post('/:id/completion-request', requireLogin, authorizeCompletionRequest,
   const id = req.completionTask.id;
 
   const note = String((req.body && req.body.result_note) || '').trim();
+  if (note.length > 2000) {
+    // multer 已在前一中间件将附件落盘；业务校验失败时必须一并清理，
+    // 否则可借由超长说明反复提交无主文件占满上传目录。
+    return rejectUploadedRequest(req, res, next, 400, '完成说明不能超过 2000 个字符');
+  }
   const requestedAt = nowISO();
   let attachmentCount;
   try {
@@ -400,48 +429,43 @@ router.post('/:id/return', requireLogin, (req, res) => {
 
 /* ---------------- 编辑任务 ---------------- */
 
-router.patch('/:id', requireLogin, (req, res) => {
-  const id = Number(req.params.id);
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
-  if (!task) return res.status(404).json({ error: '任务不存在' });
-
-  const u = req.user;
-  const isOwner = u.role === 'admin' || task.creator_id === u.id;
-
-  const { status } = req.body || {};
-
-  /* --- 状态流转 --- */
-  if (status !== undefined) {
-    if (!['in_progress', 'completed'].includes(status)) {
-      return res.status(400).json({ error: '状态不合法' });
-    }
-    if (status === 'completed') {
-      if (!isOwner) return res.status(403).json({ error: '只有任务发布者或管理员可以确认完成' });
-      if (task.status === 'completed') return res.status(400).json({ error: '该任务已完成' });
-      if (!task.completion_requested_at) return res.status(400).json({ error: '执行人尚未提交完成申请' });
-      const ts = nowISO();
-      db.prepare("UPDATE tasks SET status='completed', completed_at=?, result_note=?, returned_at=NULL, return_reason='' WHERE id=?")
-        .run(ts, String(task.completion_request_note || '').trim(), id);
-      const ms = new Date(ts).getTime() - new Date(task.created_at).getTime();
-      log(id, u.id, 'complete_confirm', `发布者确认完成，耗时 ${humanDuration(ms)}`);
-      return res.json({ ok: true, duration_text: humanDuration(ms) });
-    }
-    // 仅允许重新开启已完成任务；退回任务必须通过编辑后重新派发。
-    if (!isOwner) return res.status(403).json({ error: '只有管理员或任务创建者可以重新开启任务' });
-    if (task.returned_at) return res.status(400).json({ error: '请编辑任务后重新派发' });
-    if (task.status === 'in_progress') return res.status(400).json({ error: '该任务已经在执行中' });
-    db.prepare(
-      "UPDATE tasks SET status='in_progress', completed_at=NULL, result_note='', completion_requested_at=NULL, completion_request_note='', returned_at=NULL, return_reason='' WHERE id=?"
-    ).run(id);
-    log(id, u.id, 'reopen', '任务被重新开启');
-    return res.json({ ok: true });
+function updateTaskComplete(task, user) {
+  if (task.status === 'completed') return { status: 400, body: { error: '该任务已完成' } };
+  if (!task.completion_requested_at) return { status: 400, body: { error: '执行人尚未提交完成申请' } };
+  const ts = nowISO();
+  // 乐观锁：WHERE 条件要求 status 仍为 in_progress 且 completion_requested_at 仍存在，
+  // 防止两个并发请求都通过前置校验后都执行 UPDATE，重复写 complete_confirm 日志或丢失 result_note。
+  const update = db.prepare(
+    "UPDATE tasks SET status='completed', completed_at=?, result_note=?, returned_at=NULL, return_reason='' " +
+    "WHERE id=? AND status='in_progress' AND completion_requested_at IS NOT NULL"
+  ).run(ts, String(task.completion_request_note || '').trim(), task.id);
+  if (update.changes !== 1) {
+    return { status: 409, body: { error: '任务状态已变化，请刷新后重试' } };
   }
+  const ms = new Date(ts).getTime() - new Date(task.created_at).getTime();
+  log(task.id, user.id, 'complete_confirm', `发布者确认完成，耗时 ${humanDuration(ms)}`);
+  return { status: 200, body: { ok: true, duration_text: humanDuration(ms) } };
+}
 
-  /* --- 内容编辑 --- */
-  if (!isOwner) return res.status(403).json({ error: '只有管理员或任务创建者可以修改任务内容' });
-  if (task.completion_requested_at) return res.status(409).json({ error: '任务正在等待完成确认，确认后再修改' });
+function updateTaskReopen(task, user) {
+  if (task.returned_at) return { status: 400, body: { error: '请编辑任务后重新派发' } };
+  if (task.status === 'in_progress') return { status: 400, body: { error: '该任务已经在执行中' } };
+  // 乐观锁：仅允许将 completed 状态重新开启；并发 reopen 双写日志由 changes 守护
+  const update = db.prepare(
+    "UPDATE tasks SET status='in_progress', completed_at=NULL, result_note='', completion_requested_at=NULL, completion_request_note='', returned_at=NULL, return_reason='' " +
+    "WHERE id=? AND status='completed'"
+  ).run(task.id);
+  if (update.changes !== 1) {
+    return { status: 409, body: { error: '任务状态已变化，请刷新后重试' } };
+  }
+  log(task.id, user.id, 'reopen', '任务被重新开启');
+  return { status: 200, body: { ok: true } };
+}
 
-  const { title, description, category, priority, assignee_id, due_at } = req.body || {};
+function updateTaskDetail(task, user, body) {
+  if (task.completion_requested_at) return { status: 409, body: { error: '任务正在等待完成确认，确认后再修改' } };
+
+  const { title, description, category, priority, assignee_id, due_at } = body || {};
   const redispatching = Boolean(task.returned_at);
   const sets = [];
   const args = [];
@@ -455,32 +479,63 @@ router.patch('/:id', requireLogin, (req, res) => {
   }
   if (due_at !== undefined) {
     const normalizedDueAt = normalizeDueAt(due_at);
-    if (!normalizedDueAt.valid) return res.status(400).json({ error: '截止时间不合法' });
+    if (!normalizedDueAt.valid) return { status: 400, body: { error: '截止时间不合法' } };
     const unchanged = normalizedDueAt.value === task.due_at;
     if (normalizedDueAt.value && (redispatching || !unchanged) && new Date(normalizedDueAt.value).getTime() <= Date.now()) {
-      return res.status(400).json({ error: '要求完成时间必须晚于当前时间' });
+      return { status: 400, body: { error: '要求完成时间必须晚于当前时间' } };
     }
     sets.push('due_at = ?'); args.push(normalizedDueAt.value); changes.push('截止时间');
   }
   if (assignee_id !== undefined && Number(assignee_id) !== task.assignee_id) {
     const assignee = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(assignee_id));
     if (!assignee || assignee.role !== 'executor' || assignee.active !== 1) {
-      return res.status(400).json({ error: '执行人不合法' });
+      return { status: 400, body: { error: '执行人不合法' } };
     }
     sets.push('assignee_id = ?'); args.push(assignee.id);
     changes.push(`执行人改为 ${assignee.name}`);
   }
 
-  if (!sets.length) return res.status(400).json({ error: '没有需要修改的内容' });
+  if (!sets.length) return { status: 400, body: { error: '没有需要修改的内容' } };
   if (redispatching) {
     sets.push("status = 'in_progress'", 'completed_at = NULL', "result_note = ''", 'completion_requested_at = NULL', "completion_request_note = ''", 'returned_at = NULL', "return_reason = ''");
   }
-  args.push(id);
+  args.push(task.id);
   db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...args);
-  log(id, u.id, redispatching ? 'redispatch_edit' : 'update', redispatching
+  log(task.id, user.id, redispatching ? 'redispatch_edit' : 'update', redispatching
     ? `重新编辑并派发任务，修改了：${changes.join('、')}`
     : `修改了：${changes.join('、')}`);
-  res.json({ ok: true, redispatched: redispatching });
+  return { status: 200, body: { ok: true, redispatched: redispatching } };
+}
+
+router.patch('/:id', requireLogin, (req, res) => {
+  const id = Number(req.params.id);
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  if (!task) return res.status(404).json({ error: '任务不存在' });
+
+  const u = req.user;
+  const isOwner = u.role === 'admin' || task.creator_id === u.id;
+  const { status } = req.body || {};
+
+  /* --- 状态流转 --- */
+  if (status !== undefined) {
+    if (!['in_progress', 'completed'].includes(status)) {
+      return res.status(400).json({ error: '状态不合法' });
+    }
+    if (status === 'completed') {
+      if (!isOwner) return res.status(403).json({ error: '只有任务发布者或管理员可以确认完成' });
+      const result = updateTaskComplete(task, u);
+      return res.status(result.status).json(result.body);
+    }
+    // 仅允许重新开启已完成任务；退回任务必须通过编辑后重新派发。
+    if (!isOwner) return res.status(403).json({ error: '只有管理员或任务创建者可以重新开启任务' });
+    const result = updateTaskReopen(task, u);
+    return res.status(result.status).json(result.body);
+  }
+
+  /* --- 内容编辑 --- */
+  if (!isOwner) return res.status(403).json({ error: '只有管理员或任务创建者可以修改任务内容' });
+  const result = updateTaskDetail(task, u, req.body);
+  return res.status(result.status).json(result.body);
 });
 
 /* ---------------- 追加附件 ---------------- */
@@ -575,3 +630,5 @@ module.exports = router;
 module.exports.BASE_SELECT = BASE_SELECT;
 module.exports.scopeClause = scopeClause;
 module.exports.decorate = decorate;
+// 供入口错误中间件在 multer 失败时清理已上传到磁盘的临时文件
+module.exports.removeUploadedFiles = removeUploadedFiles;
