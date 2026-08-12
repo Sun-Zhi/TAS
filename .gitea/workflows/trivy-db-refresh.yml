@@ -1,0 +1,16 @@
+name: trivy-db-refresh
+# 定期刷新 Trivy 漏洞库（trivy-db）到共享卷 trivy-cache，使依赖漏洞(vuln)扫描保持最新。
+# 该卷被所有仓库的 code-scan fs-vuln job 共用，所以只需这一个定时任务即可全局生效。
+on:
+  schedule:
+    - cron: "0 18 * * 0"   # 每周日 18:00 UTC（北京时间 周一 02:00）；改频率改此行
+  workflow_dispatch: {}     # 允许在 Actions 页面手动触发，便于验证
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 刷新 Trivy 漏洞库
+        run: |
+          set -e
+          docker run --rm             -e HTTP_PROXY=http://http.docker.internal:3128             -e HTTPS_PROXY=http://http.docker.internal:3128             -e NO_PROXY=             -v trivy-cache:/root/.cache/trivy             aquasec/trivy:latest image --download-db-only --cache-dir /root/.cache/trivy
+          echo "trivy-db 刷新完成（增量更新）"
