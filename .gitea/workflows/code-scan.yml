@@ -78,11 +78,18 @@ jobs:
       - name: Trivy 漏洞扫描
         run: |
           set +e
-          # 注意：依赖漏洞(vuln)扫描需要 Trivy 漏洞库，其官方源（ghcr.io / public.ecr.aws / mirror.gcr.io）
-          # 在当前内网环境均不可达（UNAUTHORIZED / 超时），故先关闭 vuln，仅扫 secret/misconfig/license
-          # （这三项无需漏洞库即可运行）。待配置可访问的 DB 源（代理 / 预缓存 / 自建镜像）后，
-          # 把下面 --scanners 改回 "vuln,secret,misconfig,license" 即可恢复依赖漏洞扫描。
-          docker run --rm -v "$PWD":/workspace -v trivy-cache:/root/.cache/trivy -w /workspace aquasec/trivy:latest fs --cache-dir /root/.cache/trivy --scanners secret,misconfig,license --severity HIGH,CRITICAL --exit-code 1 /workspace > /tmp/trivy.out 2>&1
+                    # 依赖漏洞(vuln)扫描已启用：漏洞库已预缓存到 trivy-cache 卷（离线可用，无需联网）。
+          # TRIVY_OFFLINE_SCAN / --skip-db-update 让其直接读缓存，不再联网拉库。
+          docker run --rm \
+            -e TRIVY_SKIP_DB_UPDATE=true \
+            -e TRIVY_OFFLINE_SCAN=true \
+            -v "$PWD":/workspace \
+            -v trivy-cache:/root/.cache/trivy \
+            -w /workspace \
+            aquasec/trivy:latest fs \
+            --cache-dir /root/.cache/trivy \
+            --scanners vuln,secret,misconfig,license \
+            --severity HIGH,CRITICAL --exit-code 1 /workspace > /tmp/trivy.out 2>&1
           rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "Trivy 发现高危漏洞："
