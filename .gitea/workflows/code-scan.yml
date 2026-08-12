@@ -1,7 +1,11 @@
 # Gitea Actions：每次 push / PR 强制代码扫描（提交前门禁）
+# 发现密钥 / 漏洞 / 安全问题 → 自动在仓库开 Issue（钉在首页）+ 阻断合并
 # 用法：复制到你的项目仓库根目录 .gitea/workflows/code-scan.yml
-# 前提：仓库已开启 Actions，且已注册 act_runner（见 README “代码扫描” 节）
-# 说明：runner 通过 /var/run/docker.sock 调用扫描器镜像，仓库内无需装任何依赖
+# 前提：
+#   1. 仓库已开启 Actions，且已注册 act_runner
+#   2. 仓库 Settings → Actions Secrets 添加 GITEA_TOKEN（有 repo + issue 权限的访问令牌）
+# 说明：runner 通过 /var/run/docker.sock 调用扫描器镜像；任务容器与 gitea 同处
+#       gitea-actions 网络，可直接访问 http://gitea:3000 调 API。
 
 name: code-scan
 on:
@@ -12,29 +16,80 @@ on:
 jobs:
   secret-scan:                # 密钥 / 敏感信息
     runs-on: ubuntu-latest
+    env:
+      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+      GITEA_REPO: ${{ gitea.repository }}
+      GITEA_SHA: ${{ gitea.sha }}
     steps:
       - uses: https://gitea.com/actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Gitleaks 密钥扫描
-        uses: docker://zricethezav/gitleaks:latest
-        args: detect --source=/workspace --redact --no-banner --exit-code 1
+        run: |
+          set +e
+          docker run --rm -v "$PWD":/workspace -w /workspace zricethezav/gitleaks:latest detect --source=/workspace --redact --no-banner --exit-code 1 > /tmp/gitleaks.out 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "Gitleaks 发现疑似密钥/敏感信息："
+            cat /tmp/gitleaks.out
+            KWD="[密钥泄露]"
+            if curl -s "http://gitea:3000/api/v1/repos/$GITEA_REPO/issues?state=open&type=issues" -H "Authorization: token $GITEA_TOKEN" | grep -Fq "$KWD"; then
+              echo "已存在相同未关闭 Issue，跳过新建"
+            else
+              python3 -c "import json,os,urllib.request; tok=os.environ['GITEA_TOKEN']; repo=os.environ['GITEA_REPO']; sha=os.environ['GITEA_SHA']; out=open('/tmp/gitleaks.out').read()[-2000:]; title='[密钥泄露] Gitleaks 在 %s 发现敏感信息'%sha; body='扫描发现疑似硬编码密钥/敏感信息，请立即处理（提交 %s）：\n\n%s\n\n详见 Actions 运行日志。'%(sha,out); data=json.dumps({'title':title,'body':body}).encode(); req=urllib.request.Request('http://gitea:3000/api/v1/repos/%s/issues'%repo,data=data,headers={'Authorization':'token '+tok,'Content-Type':'application/json'},method='POST'); urllib.request.urlopen(req); print('已创建 Issue')"
+            fi
+            exit 1
+          fi
 
   sast:                       # 安全 / 质量 SAST
     runs-on: ubuntu-latest
+    env:
+      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+      GITEA_REPO: ${{ gitea.repository }}
+      GITEA_SHA: ${{ gitea.sha }}
     steps:
       - uses: https://gitea.com/actions/checkout@v4
       - name: Semgrep SAST
-        uses: docker://returntocorp/semgrep:latest
-        args: ci --config auto --error
+        run: |
+          set +e
+          docker run --rm -v "$PWD":/workspace -w /workspace returntocorp/semgrep:latest ci --config auto --error > /tmp/semgrep.out 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "Semgrep 命中安全规则："
+            cat /tmp/semgrep.out
+            KWD="[安全]"
+            if curl -s "http://gitea:3000/api/v1/repos/$GITEA_REPO/issues?state=open&type=issues" -H "Authorization: token $GITEA_TOKEN" | grep -Fq "$KWD"; then
+              echo "已存在相同未关闭 Issue，跳过新建"
+            else
+              python3 -c "import json,os,urllib.request; tok=os.environ['GITEA_TOKEN']; repo=os.environ['GITEA_REPO']; sha=os.environ['GITEA_SHA']; out=open('/tmp/semgrep.out').read()[-2000:]; title='[安全] Semgrep 在 %s 发现安全问题'%sha; body='Semgrep 命中安全规则（提交 %s）：\n\n%s\n\n详见 Actions 运行日志。'%(sha,out); data=json.dumps({'title':title,'body':body}).encode(); req=urllib.request.Request('http://gitea:3000/api/v1/repos/%s/issues'%repo,data=data,headers={'Authorization':'token '+tok,'Content-Type':'application/json'},method='POST'); urllib.request.urlopen(req); print('已创建 Issue')"
+            fi
+            exit 1
+          fi
 
   fs-vuln:                    # 依赖 / 文件系统 / IaC / 许可证
     runs-on: ubuntu-latest
+    env:
+      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+      GITEA_REPO: ${{ gitea.repository }}
+      GITEA_SHA: ${{ gitea.sha }}
     steps:
       - uses: https://gitea.com/actions/checkout@v4
       - name: Trivy 漏洞扫描
-        uses: docker://aquasec/trivy:latest
-        args: fs --scanners vuln,secret,misconfig,license --exit-code 1 --severity HIGH,CRITICAL /workspace
+        run: |
+          set +e
+          docker run --rm -v "$PWD":/workspace -w /workspace aquasec/trivy:latest fs --scanners vuln,secret,misconfig,license --exit-code 1 --severity HIGH,CRITICAL /workspace > /tmp/trivy.out 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "Trivy 发现高危漏洞："
+            cat /tmp/trivy.out
+            KWD="[漏洞]"
+            if curl -s "http://gitea:3000/api/v1/repos/$GITEA_REPO/issues?state=open&type=issues" -H "Authorization: token $GITEA_TOKEN" | grep -Fq "$KWD"; then
+              echo "已存在相同未关闭 Issue，跳过新建"
+            else
+              python3 -c "import json,os,urllib.request; tok=os.environ['GITEA_TOKEN']; repo=os.environ['GITEA_REPO']; sha=os.environ['GITEA_SHA']; out=open('/tmp/trivy.out').read()[-2000:]; title='[漏洞] Trivy 在 %s 发现 HIGH/CRITICAL 漏洞'%sha; body='Trivy 发现高危漏洞（提交 %s）：\n\n%s\n\n详见 Actions 运行日志。'%(sha,out); data=json.dumps({'title':title,'body':body}).encode(); req=urllib.request.Request('http://gitea:3000/api/v1/repos/%s/issues'%repo,data=data,headers={'Authorization':'token '+tok,'Content-Type':'application/json'},method='POST'); urllib.request.urlopen(req); print('已创建 Issue')"
+            fi
+            exit 1
+          fi
 
   lint:                       # 语法 / 风格（建议性，不强制阻断）
     strategy:
