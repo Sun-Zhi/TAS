@@ -3,7 +3,8 @@
 # 用法：复制到你的项目仓库根目录 .gitea/workflows/code-scan.yml
 # 前提：
 #   1. 仓库已开启 Actions，且已注册 act_runner
-#   2. 仓库 Settings → Actions Secrets 添加 GITEA_TOKEN（有 repo + issue 权限的访问令牌）
+#   2.（推荐）仓库 Settings → Actions Secrets 添加 GITEA_TOKEN（有 repo + issue 权限的访问令牌）；
+#      不配也能开 Issue（Gitea 默认允许匿名建 Issue），配了权限更清晰。
 # 说明：runner 通过 /var/run/docker.sock 调用扫描器镜像；任务容器与 gitea 同处
 #       gitea-actions 网络，可直接访问 http://gitea:3000 调 API。
 
@@ -52,7 +53,7 @@ jobs:
       - name: Semgrep SAST
         run: |
           set +e
-          docker run --rm -v "$PWD":/workspace -w /workspace returntocorp/semgrep:latest ci --config auto --error > /tmp/semgrep.out 2>&1
+          docker run --rm -v "$PWD":/workspace -w /workspace returntocorp/semgrep:latest sh -c "semgrep ci --config auto --error" > /tmp/semgrep.out 2>&1
           rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "Semgrep 命中安全规则："
@@ -77,7 +78,7 @@ jobs:
       - name: Trivy 漏洞扫描
         run: |
           set +e
-          docker run --rm -v "$PWD":/workspace -w /workspace aquasec/trivy:latest fs --scanners vuln,secret,misconfig,license --exit-code 1 --severity HIGH,CRITICAL /workspace > /tmp/trivy.out 2>&1
+          docker run --rm -v "$PWD":/workspace -v trivy-cache:/root/.cache/trivy -w /workspace aquasec/trivy:latest fs --cache-dir /root/.cache/trivy --db-repository registry.cn-hangzhou.aliyuncs.com/aquasec/trivy-db --scanners vuln,secret,misconfig,license --exit-code 1 --severity HIGH,CRITICAL /workspace > /tmp/trivy.out 2>&1
           rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "Trivy 发现高危漏洞："
