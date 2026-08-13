@@ -103,24 +103,32 @@ function buildScreenCategories() {
 }
 
 function buildScreenTrend() {
-  const dayRanges = [];
+  const days = [];
   for (let i = 6; i >= 0; i--) {
     const day = new Date();
     day.setHours(0, 0, 0, 0);
     day.setDate(day.getDate() - i);
-    const next = new Date(day);
-    next.setDate(next.getDate() + 1);
-    dayRanges.push({ day, next });
+    days.push(day);
   }
-  const since = dayRanges[0].day.toISOString();
-  const recent = db.prepare(
-    'SELECT created_at, completed_at FROM tasks WHERE created_at >= ? OR completed_at >= ?'
-  ).all(since, since);
-  return dayRanges.map(({ day, next }) => ({
-    date: `${day.getMonth() + 1}/${day.getDate()}`,
-    done: recent.filter((t) => t.completed_at && new Date(t.completed_at) >= day && new Date(t.completed_at) < next).length,
-    created: recent.filter((t) => new Date(t.created_at) >= day && new Date(t.created_at) < next).length,
-  }));
+  const since = days[0].toISOString();
+  // 直接在 SQL 端按本地自然日聚合，避免把近 7 天的全部时间字段拉进 JS 再逐行过滤
+  const createdByDay = new Map(
+    db.prepare("SELECT date(created_at, 'localtime') AS day, COUNT(*) AS n FROM tasks WHERE created_at >= ? GROUP BY day")
+      .all(since).map((row) => [row.day, Number(row.n)])
+  );
+  const completedByDay = new Map(
+    db.prepare("SELECT date(completed_at, 'localtime') AS day, COUNT(*) AS n FROM tasks WHERE completed_at >= ? GROUP BY day")
+      .all(since).map((row) => [row.day, Number(row.n)])
+  );
+  return days.map((day) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    const dayKey = `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`;
+    return {
+      date: `${day.getMonth() + 1}/${day.getDate()}`,
+      done: completedByDay.get(dayKey) || 0,
+      created: createdByDay.get(dayKey) || 0,
+    };
+  });
 }
 
 router.get('/screen', requireLogin, (req, res) => {

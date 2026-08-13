@@ -254,7 +254,7 @@
         </div>
         <div class="field">
           <label for="ufPassword">密码 <span class="req" id="ufPwdReq">*</span></label>
-          <input class="input" id="ufPassword" type="text" placeholder="至少 6 位">
+          <input class="input" id="ufPassword" type="text" placeholder="至少 8 位">
           <div class="hint" id="ufPwdHint">编辑时留空表示不修改密码</div>
         </div>
       </form>
@@ -323,7 +323,7 @@
     <div class="modal-head"><h3 id="pwdModalTitle">修改密码</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
       <div class="field"><label for="pwOld">原密码</label><input class="input" id="pwOld" type="password"></div>
-      <div class="field"><label for="pwNew">新密码</label><input class="input" id="pwNew" type="password" placeholder="至少 6 位"></div>
+      <div class="field"><label for="pwNew">新密码</label><input class="input" id="pwNew" type="password" placeholder="至少 8 位"></div>
     </div>
     <div class="modal-foot">
       <button class="btn ghost" data-close>取消</button>
@@ -377,6 +377,11 @@
 </div>
 
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="/js/app.js?v=20260812-11"></script>
+<script src="/js/util.js?v=20260813-1"></script>
+<script src="/js/modal.js?v=20260813-1"></script>
+<script src="/js/due-picker.js?v=20260813-1"></script>
+<script src="/js/task-actions.js?v=20260813-1"></script>
+<script src="/js/users.js?v=20260813-1"></script>
+<script src="/js/app.js?v=20260813-1"></script>
 </body>
 </html>

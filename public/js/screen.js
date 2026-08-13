@@ -35,15 +35,42 @@ function tick() {
 setInterval(tick, 1000);
 tick();
 
+/* 页面级错误提示：刷新失败时在页头显示，大屏不能只把错误写进控制台 */
+function showScreenError(message) {
+  const el = $('#scrError');
+  el.textContent = message;
+  el.hidden = false;
+}
+function clearScreenError() {
+  const el = $('#scrError');
+  el.textContent = '';
+  el.hidden = true;
+}
+
 /* 数据加载 */
+let screenLoadInFlight = false;
 async function load() {
+  // 上一轮请求未完成时直接跳过本轮，避免轮询请求堆积重入
+  if (screenLoadInFlight) return;
+  screenLoadInFlight = true;
   let data;
   try {
     const res = await fetch('/api/screen', { credentials: 'same-origin' });
     if (res.status === 401) { location.href = '/login.html'; return; }
+    if (!res.ok) {
+      // 保留页面上次成功加载的数据，只提示刷新失败
+      showScreenError('数据刷新失败，页面显示的是上次成功加载的数据');
+      console.error('大屏数据加载失败，HTTP', res.status);
+      return;
+    }
     data = await res.json();
-  } catch {
+    clearScreenError();
+  } catch (error) {
+    showScreenError('数据刷新失败，页面显示的是上次成功加载的数据');
+    console.error('大屏数据加载失败', error);
     return;
+  } finally {
+    screenLoadInFlight = false;
   }
 
   const s = data.summary;
@@ -116,7 +143,14 @@ async function load() {
 }
 
 load();
-setInterval(load, 10000);
+// 递归 setTimeout 轮询：上一轮完成后才调度下一轮，避免固定间隔下的请求堆积
+function scheduleScreenRefresh() {
+  setTimeout(async () => {
+    await load();
+    scheduleScreenRefresh();
+  }, 10000);
+}
+scheduleScreenRefresh();
 
 /* 列表自动滚动播放 */
 function autoScroll(el, speed = 0.35) {

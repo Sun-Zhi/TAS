@@ -362,6 +362,37 @@ async function main() {
   ).get(taskA, `${marker}_valid_append.txt`);
   ok(validResult && validResult.kind === 'task', '发布者追加附件仍标记为 task');
 
+  console.log('\n【5】LIKE 转义与 active 参数校验');
+  const pctTask = addTask(`${marker}_100%真实`, assignerAId, executorAId);
+  const pctWild = addTask(`${marker}_100X真实`, assignerAId, executorAId);
+  const pctSearch = await request(`/api/tasks?q=${encodeURIComponent('0%')}`, { token: admin });
+  ok(pctSearch.status === 200 && pctSearch.data.tasks.some((task) => task.id === pctTask),
+    '搜索 0% 匹配字面百分号任务');
+  ok(!pctSearch.data.tasks.some((task) => task.id === pctWild),
+    '通配符 % 不会被当作任意匹配');
+  const usTask = addTask(`${marker}_A_B`, assignerAId, executorAId);
+  const usWild = addTask(`${marker}_AXB`, assignerAId, executorAId);
+  const usSearch = await request(`/api/tasks?q=${encodeURIComponent('A_B')}`, { token: admin });
+  ok(usSearch.status === 200 && usSearch.data.tasks.some((task) => task.id === usTask),
+    '搜索 A_B 匹配字面下划线任务');
+  ok(!usSearch.data.tasks.some((task) => task.id === usWild),
+    '通配符 _ 不会被当作任意匹配');
+
+  const activeNull = await request(`/api/users/${executorBId}`, {
+    method: 'PATCH', token: admin, body: { active: null },
+  });
+  ok(activeNull.status === 400, 'active=null 被显式拒绝');
+  const activeEmpty = await request(`/api/users/${executorBId}`, {
+    method: 'PATCH', token: admin, body: { active: '' },
+  });
+  ok(activeEmpty.status === 400, 'active 空串被显式拒绝');
+  const activeOff = await request(`/api/users/${executorBId}`, {
+    method: 'PATCH', token: admin, body: { active: '0' },
+  });
+  ok(activeOff.status === 200, "active='0' 可正常停用", JSON.stringify(activeOff.data));
+  ok(db.prepare('SELECT active FROM users WHERE id = ?').get(executorBId).active === 0,
+    '停用后数据库 active 为 0');
+
   console.log(`\n${'='.repeat(48)}\n  通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);
   if (fail) throw new Error(`安全回归失败 ${fail} 项`);
 }

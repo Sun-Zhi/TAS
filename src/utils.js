@@ -53,7 +53,26 @@ const PRIORITY_TEXT = { low: '低', normal: '普通', high: '高', urgent: '紧�
 const STATUS_TEXT = { in_progress: '执行中', completed: '已完成' };
 const ROLE_TEXT = { admin: '管理员', assigner: '任务分配者', executor: '任务执行者' };
 
+/** 仅 1/true/yes 视为启用；'0'、空字符串、空格等其他值一律视为关闭 */
+function isTruthyEnv(value) {
+  return /^(1|true|yes)$/i.test(String(value || '').trim());
+}
+
+const PASSWORD_MIN_LEN = 8;
+const PASSWORD_MAX_LEN = 128;
+
+/** 密码强度校验：合法返回 null，否则返回中文错误提示。
+ *  规则：8-128 位字符串、不能全为空白、至少包含一个字母和一个数字。 */
+function validatePassword(password) {
+  if (typeof password !== 'string' || password.length < PASSWORD_MIN_LEN) return '密码至少 8 位';
+  if (password.length > PASSWORD_MAX_LEN) return `密码不能超过 ${PASSWORD_MAX_LEN} 位`;
+  if (!password.trim()) return '密码不能全为空白';
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return '密码需同时包含字母和数字';
+  return null;
+}
+
 module.exports = {
   humanDuration, taskDuration, toCSV, fmtLocal,
-  PRIORITY_TEXT, STATUS_TEXT, ROLE_TEXT,
+  PRIORITY_TEXT, STATUS_TEXT, ROLE_TEXT, isTruthyEnv,
+  validatePassword,
 };

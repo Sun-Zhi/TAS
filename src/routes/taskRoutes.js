@@ -13,6 +13,11 @@ const { taskDuration, humanDuration, toCSV, fmtLocal, PRIORITY_TEXT, STATUS_TEXT
 const router = express.Router();
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
+// 任务字段长度上限（POST 创建与 PATCH 编辑共用）
+const TASK_TITLE_MAX_LEN = 200;
+const TASK_DESCRIPTION_MAX_LEN = 5000;
+const TASK_CATEGORY_MAX_LEN = 50;
+
 /* ---------------- 附件上传配置 ---------------- */
 
 const storage = multer.diskStorage({
@@ -52,6 +57,62 @@ const upload = multer({
   limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 10 },
 });
 
+/* ---------------- 按用户滑窗限流 ---------------- */
+
+// 创建任务 / 上传附件按用户滑窗限流：Map + 时间戳数组，防单个用户高频请求
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const TASK_CREATE_MAX_PER_MIN = 60;
+const ATTACH_UPLOAD_MAX_PER_MIN = 30;
+const RATE_LIMIT_MAX_ENTRIES = 10_000; // 防止恶意多用户 ID 撑爆内存
+const rateLimitStates = new Map();
+
+/** 滑窗限流检查：返回 true 表示本次请求应拒绝（限流内每次请求计数 1） */
+function userRateLimited(userId, maxPerWindow) {
+  const now = Date.now();
+  let timestamps = rateLimitStates.get(userId);
+  if (!timestamps) {
+    timestamps = [];
+    rateLimitStates.set(userId, timestamps);
+  }
+  // 滑窗：先丢弃窗口外的旧时间戳
+  const cutoff = now - RATE_LIMIT_WINDOW_MS;
+  while (timestamps.length && timestamps[0] <= cutoff) timestamps.shift();
+  if (timestamps.length >= maxPerWindow) return true;
+  timestamps.push(now);
+  // Map 超容量时删除最早插入的 key（Map 迭代顺序即插入顺序）
+  if (rateLimitStates.size > RATE_LIMIT_MAX_ENTRIES) {
+    const oldestKey = rateLimitStates.keys().next().value;
+    if (oldestKey !== undefined) rateLimitStates.delete(oldestKey);
+  }
+  return false;
+}
+
+/** 创建任务限流：同一用户 60 次/分钟 */
+function limitTaskCreate(req, res, next) {
+  if (userRateLimited(req.user.id, TASK_CREATE_MAX_PER_MIN)) {
+    return res.status(429).json({ error: '操作过于频繁，请稍后再试' });
+  }
+  next();
+}
+
+/** 上传附件限流：同一用户 30 次/分钟 */
+function limitAttachmentUpload(req, res, next) {
+  if (userRateLimited(req.user.id, ATTACH_UPLOAD_MAX_PER_MIN)) {
+    return res.status(429).json({ error: '操作过于频繁，请稍后再试' });
+  }
+  next();
+}
+
+// 周期性清理长时间无活动的限流状态，防止 Map 无限增长（内存 DoS）
+setInterval(() => {
+  const now = Date.now();
+  const cutoff = now - RATE_LIMIT_WINDOW_MS;
+  for (const [userId, timestamps] of rateLimitStates) {
+    while (timestamps.length && timestamps[0] <= cutoff) timestamps.shift();
+    if (!timestamps.length) rateLimitStates.delete(userId);
+  }
+}, 5 * 60 * 1000).unref();
+
 function removeUploadedFiles(files) {
   let firstError = null;
   const uploadRoot = `${path.resolve(UPLOAD_DIR)}${path.sep}`;
@@ -62,6 +123,8 @@ function removeUploadedFiles(files) {
       continue;
     }
     try {
+      // 有意使用同步删除：该函数仅在请求失败清理时调用（同步上下文），
+      // 文件数少（≤10 个/请求）且需在下一次请求处理前确认已删除，避免残留。
       fs.unlinkSync(filePath);
     } catch (error) {
       if (error.code !== 'ENOENT') firstError ||= error;
@@ -208,8 +271,10 @@ router.get('/', requireLogin, (req, res) => {
   if (creator_id)  { where.push('t.creator_id = ?');  args.push(Number(creator_id)); }
   if (category)    { where.push('t.category = ?');    args.push(String(category)); }
   if (q) {
-    where.push('(t.title LIKE ? OR t.description LIKE ? OR au.name LIKE ?)');
-    const kw = `%${q}%`;
+    // 转义 LIKE 通配符，避免用户输入 %/_ 变成任意匹配符；ESCAPE '\' 指定转义字符
+    const escaped = String(q).replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    where.push("(t.title LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\' OR au.name LIKE ? ESCAPE '\\')");
+    const kw = `%${escaped}%`;
     args.push(kw, kw, kw);
   }
 
@@ -258,12 +323,12 @@ router.get('/categories', requireLogin, (req, res) => {
 router.get('/:id', requireLogin, (req, res) => {
   const id = Number(req.params.id);
   const task = db.prepare(`${BASE_SELECT} WHERE t.id = ?`).get(id);
-  if (!task) return res.status(404).json({ error: '任务不存在' });
 
   const u = req.user;
+  // 任务不存在与无权查看统一返回 404，避免通过响应码枚举任务 ID 存在性
   const visible =
-    u.role === 'admin' || task.creator_id === u.id || task.assignee_id === u.id;
-  if (!visible) return res.status(403).json({ error: '无权查看该任务' });
+    !!task && (u.role === 'admin' || task.creator_id === u.id || task.assignee_id === u.id);
+  if (!visible) return res.status(404).json({ error: '任务不存在' });
 
   const attachments = db
     .prepare('SELECT id, orig_name, size, mime, kind, created_at FROM attachments WHERE task_id = ? ORDER BY id')
@@ -281,10 +346,20 @@ router.get('/:id', requireLogin, (req, res) => {
 
 /* ---------------- 创建任务 ---------------- */
 
-router.post('/', requireRole('admin', 'assigner'), upload.array('files', 10), (req, res, next) => {
+router.post('/', requireRole('admin', 'assigner'), limitTaskCreate, upload.array('files', 10), (req, res, next) => {
   const { title, description, category, priority, assignee_id, due_at } = req.body || {};
   if (!title || !String(title).trim()) {
     return rejectUploadedRequest(req, res, next, 400, '请填写任务标题');
+  }
+  // 字段长度上限校验
+  if (String(title).length > TASK_TITLE_MAX_LEN) {
+    return rejectUploadedRequest(req, res, next, 400, `任务标题不能超过 ${TASK_TITLE_MAX_LEN} 个字符`);
+  }
+  if (String(description || '').length > TASK_DESCRIPTION_MAX_LEN) {
+    return rejectUploadedRequest(req, res, next, 400, `任务描述不能超过 ${TASK_DESCRIPTION_MAX_LEN} 个字符`);
+  }
+  if (String(category || '').length > TASK_CATEGORY_MAX_LEN) {
+    return rejectUploadedRequest(req, res, next, 400, `任务类别不能超过 ${TASK_CATEGORY_MAX_LEN} 个字符`);
   }
   if (!assignee_id) return rejectUploadedRequest(req, res, next, 400, '请指定任务执行人');
 
@@ -390,7 +465,7 @@ router.post('/:id/completion-request', requireLogin, authorizeCompletionRequest,
 
 /* ---------------- 执行者退回任务 ---------------- */
 
-router.post('/:id/return', requireLogin, (req, res) => {
+router.post('/:id/return', requireLogin, (req, res, next) => {
   const id = Number(req.params.id);
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!task) return res.status(404).json({ error: '任务不存在' });
@@ -421,7 +496,9 @@ router.post('/:id/return', requireLogin, (req, res) => {
       log(id, req.user.id, 'return', `退回任务：${reason}`);
     });
   } catch (error) {
-    return res.status(error.status || 500).json({ error: error.message || '退回任务失败' });
+    // 带 status 的业务错误（如事务内 409 冲突）按原状态码返回；其余交给全局错误中间件统一处理（5xx 遮蔽）
+    if (error && error.status) return res.status(error.status).json({ error: error.message });
+    return next(error);
   }
 
   res.json({ ok: true, returned_at: returnedAt });
@@ -467,6 +544,17 @@ function updateTaskDetail(task, user, body) {
 
   const { title, description, category, priority, assignee_id, due_at } = body || {};
   const redispatching = Boolean(task.returned_at);
+
+  // 长度校验：PATCH 语义下仅当字段存在（!== undefined）时才校验
+  if (title !== undefined && String(title).length > TASK_TITLE_MAX_LEN) {
+    return { status: 400, body: { error: `任务标题不能超过 ${TASK_TITLE_MAX_LEN} 个字符` } };
+  }
+  if (description !== undefined && String(description).length > TASK_DESCRIPTION_MAX_LEN) {
+    return { status: 400, body: { error: `任务描述不能超过 ${TASK_DESCRIPTION_MAX_LEN} 个字符` } };
+  }
+  if (category !== undefined && String(category).length > TASK_CATEGORY_MAX_LEN) {
+    return { status: 400, body: { error: `任务类别不能超过 ${TASK_CATEGORY_MAX_LEN} 个字符` } };
+  }
   const sets = [];
   const args = [];
   const changes = [];
@@ -558,7 +646,7 @@ function authorizeAttachmentUpload(req, res, next) {
   next();
 }
 
-router.post('/:id/attachments', requireLogin, authorizeAttachmentUpload, upload.array('files', 10), (req, res, next) => {
+router.post('/:id/attachments', requireLogin, authorizeAttachmentUpload, limitAttachmentUpload, upload.array('files', 10), (req, res, next) => {
   const task = req.uploadTask;
   const id = task.id;
   const u = req.user;
@@ -592,7 +680,12 @@ router.get('/attachments/:aid/download', requireLogin, (req, res) => {
 
   const filePath = path.join(UPLOAD_DIR, att.stored_name);
   if (!fs.existsSync(filePath)) return res.status(404).send('文件已丢失');
-  res.download(filePath, att.orig_name);
+  // 清理文件名中的控制字符（0x00-0x1F、0x7F），防止通过 Content-Disposition 注入换行/响应头
+  const safeName = String(att.orig_name || 'download')
+    .split('')
+    .map((ch) => (ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127 ? '_' : ch))
+    .join('');
+  res.download(filePath, safeName);
 });
 
 /** 删除附件 */
@@ -606,7 +699,9 @@ router.delete('/attachments/:aid', requireLogin, (req, res) => {
   if (!allowed) return res.status(403).json({ error: '无权删除该附件' });
 
   db.prepare('DELETE FROM attachments WHERE id = ?').run(aid);
-  fs.promises.unlink(path.join(UPLOAD_DIR, att.stored_name)).catch(() => {});
+  fs.promises.unlink(path.join(UPLOAD_DIR, att.stored_name)).catch((error) => {
+    if (error.code !== 'ENOENT') console.error('[cleanup] 附件文件删除失败', att.stored_name, error.message);
+  });
   log(att.task_id, u.id, 'attach_del', `删除附件 ${att.orig_name}`);
   res.json({ ok: true });
 });
@@ -622,7 +717,11 @@ router.delete('/:id', requireLogin, (req, res) => {
   }
   const atts = db.prepare('SELECT stored_name FROM attachments WHERE task_id = ?').all(id);
   db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
-  for (const a of atts) fs.promises.unlink(path.join(UPLOAD_DIR, a.stored_name)).catch(() => {});
+  for (const a of atts) {
+    fs.promises.unlink(path.join(UPLOAD_DIR, a.stored_name)).catch((error) => {
+      if (error.code !== 'ENOENT') console.error('[cleanup] 附件文件删除失败', a.stored_name, error.message);
+    });
+  }
   res.json({ ok: true });
 });
 

@@ -37,6 +37,7 @@ body::before{
   -webkit-background-clip:text;background-clip:text;color:transparent;
 }
 .hd .tag{font-size:12px;color:var(--cyan);border:1px solid var(--line);padding:2px 10px;border-radius:20px;letter-spacing:1px;}
+.hd .tag#scrError{color:var(--red);border-color:var(--red);}
 .hd .sp{flex:1;}
 .hd .clock{font-size:15px;color:var(--sub);font-variant-numeric:tabular-nums;}
 .hd .clock b{color:var(--txt);font-size:21px;margin-right:10px;}
@@ -152,6 +153,7 @@ body::before{
   <div class="hd">
     <h1>任务执行监控大屏</h1>
     <span class="tag"><span class="live"></span>实时数据</span>
+    <span class="tag" id="scrError" hidden></span>
     <div class="sp"></div>
     <div class="clock"><b id="clkTime">--:--:--</b><span id="clkDate"></span></div>
     <a href="/index.html">返回工作台</a>

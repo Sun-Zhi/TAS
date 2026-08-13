@@ -35,6 +35,14 @@ if (exists > 0) {
   process.exit(0);
 }
 
+// 演示数据引用默认账号；缺账号时直接插入会产生空创建人/执行人，先做校验。
+const REQUIRED_USERS = [...new Set(DATA.flatMap((d) => [d[3], d[4]]))];
+const missingUsers = REQUIRED_USERS.filter((username) => !U[username]);
+if (missingUsers.length) {
+  console.error(`缺少演示账号：${missingUsers.join('、')}。请启用演示账号（ENABLE_DEMO_ACCOUNTS=1）并先启动一次服务完成初始化。`);
+  process.exit(1);
+}
+
 const insTask = db.prepare(
   `INSERT INTO tasks (title, description, category, priority, status, creator_id, assignee_id, due_at, created_at, completed_at, result_note)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -43,28 +51,36 @@ const insLog = db.prepare(
   'INSERT INTO task_logs (task_id, user_id, action, detail, created_at) VALUES (?, ?, ?, ?, ?)'
 );
 
+// 包事务：中途失败整体回滚，避免留下半份演示数据（重跑会被上面的存在性检查跳过）
+db.exec('BEGIN');
 let n = 0;
-for (const [title, cat, pri, creator, assignee, createdH, doneH, note] of DATA) {
-  const createdAt = iso(createdH * H);
-  const completedAt = doneH == null ? null : iso(doneH * H);
-  const status = doneH == null ? 'in_progress' : 'completed';
-  // 部分执行中任务设置已过期的截止时间，用于演示逾期
-  const dueAt = doneH == null && (n % 4 === 2) ? iso(2 * H) : iso(-24 * H);
+try {
+  for (const [title, cat, pri, creator, assignee, createdH, doneH, note] of DATA) {
+    const createdAt = iso(createdH * H);
+    const completedAt = doneH == null ? null : iso(doneH * H);
+    const status = doneH == null ? 'in_progress' : 'completed';
+    // 部分执行中任务设置已过期的截止时间，用于演示逾期
+    const dueAt = doneH == null && (n % 4 === 2) ? iso(2 * H) : iso(-24 * H);
 
-  const info = insTask.run(
-    title, `${title}——由 ${creator} 派发，请按验收标准完成后标记。`, cat, pri, status,
-    U[creator], U[assignee], dueAt, createdAt, completedAt, note
-  );
-  const tid = Number(info.lastInsertRowid);
-  insLog.run(tid, U[creator], 'create', '任务已创建并派发', createdAt);
-  if (completedAt) {
-    const ms = new Date(completedAt) - new Date(createdAt);
-    const min = Math.floor(ms / 60000);
-    const d = Math.floor(min / 1440), h = Math.floor((min % 1440) / 60), m = min % 60;
-    const txt = (d ? `${d}天` : '') + (h ? `${h}小时` : '') + (m || (!d && !h) ? `${m}分` : '');
-    insLog.run(tid, U[assignee], 'complete', `标记完成，耗时 ${txt}`, completedAt);
+    const info = insTask.run(
+      title, `${title}——由 ${creator} 派发，请按验收标准完成后标记。`, cat, pri, status,
+      U[creator], U[assignee], dueAt, createdAt, completedAt, note
+    );
+    const tid = Number(info.lastInsertRowid);
+    insLog.run(tid, U[creator], 'create', '任务已创建并派发', createdAt);
+    if (completedAt) {
+      const ms = new Date(completedAt) - new Date(createdAt);
+      const min = Math.floor(ms / 60000);
+      const d = Math.floor(min / 1440), h = Math.floor((min % 1440) / 60), m = min % 60;
+      const txt = (d ? `${d}天` : '') + (h ? `${h}小时` : '') + (m || (!d && !h) ? `${m}分` : '');
+      insLog.run(tid, U[assignee], 'complete', `标记完成，耗时 ${txt}`, completedAt);
+    }
+    n++;
   }
-  n++;
+  db.exec('COMMIT');
+} catch (error) {
+  db.exec('ROLLBACK');
+  throw error;
 }
 
 console.log(`已生成 ${n} 个演示任务（${DATA.filter((d) => d[6] == null).length} 个执行中 / ${DATA.filter((d) => d[6] != null).length} 个已完成）。`);

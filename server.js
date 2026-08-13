@@ -1,22 +1,8 @@
 'use strict';
 
-const path = require('path');
-const express = require('express');
-const multer = require('multer');
-
-const { attachUser, cleanupSessions } = require('./src/auth');
-// 入口错误中间件在 multer 失败时复用 taskRoutes 的清理函数
-const { removeUploadedFiles } = require('./src/routes/taskRoutes');
-// 优雅关闭时需要关闭 SQLite 连接
-const { db } = require('./src/db');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-// 默认监听所有网卡，便于同一局域网内访问；可用 HOST 环境变量收窄。
-const HOST = process.env.HOST || '0.0.0.0';
-
 /* ---------------- boot-time 校验 ---------------- */
 // 生产环境强制要求关键环境变量，避免静默使用默认值或运行时崩溃。
+// 必须先于所有 require 执行：db.js 在模块加载时就会读取 DATA_DIR/UPLOAD_DIR 并连接数据库。
 function requireEnv(name) {
   const value = process.env[name];
   if (!value) {
@@ -31,10 +17,26 @@ if (process.env.NODE_ENV === 'production') {
   requireEnv('UPLOAD_DIR');
 }
 
+const path = require('path');
+const express = require('express');
+const multer = require('multer');
+
+const { attachUser, cleanupSessions } = require('./src/auth');
+// 入口错误中间件在 multer 失败时复用 taskRoutes 的清理函数
+const { removeUploadedFiles } = require('./src/routes/taskRoutes');
+// 优雅关闭时需要关闭 SQLite 连接
+const { db } = require('./src/db');
+const { isTruthyEnv } = require('./src/utils');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+// 默认监听所有网卡，便于同一局域网内访问；可用 HOST 环境变量收窄。
+const HOST = process.env.HOST || '0.0.0.0';
+
 app.disable('x-powered-by');
 /* ---------------- HTTP 安全头 ---------------- */
-// 注：script-src 保留 'unsafe-inline' 是为了兼容 public/js/app.js 中模板字符串拼接的
-// inline event handler（onclick="..."）。未来重构为 addEventListener 后改为严格 CSP。
+// script-src 已收紧为 'self'（前端已全部改为 addEventListener 事件委托，无内联脚本）。
+// style-src 保留 'unsafe-inline'：页面大量使用内联 style 属性，属样式展示层。
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -44,14 +46,21 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
   );
   next();
 });
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
-app.use(attachUser);
+// 部署在 Nginx 等反代之后时设置 TRUST_PROXY=1，让 req.ip 取 X-Forwarded-For 中的真实客户端 IP
+if (isTruthyEnv(process.env.TRUST_PROXY)) {
+  app.set('trust proxy', 1);
+  // 显式提示部署风险：若服务直连公网却开启此选项，攻击者可伪造 XFF 绕过按 IP 限流
+  console.warn('[security] TRUST_PROXY 已启用：req.ip 将信任 X-Forwarded-For 最右一跳，仅在反向代理之后部署时使用。');
+}
+// 仅 API 路由需要登录态解析：静态资源请求不再做 cookie 解析与数据库查询
+app.use('/api', attachUser);
 
 /* ---------------- API 路由 ---------------- */
 app.use('/api/auth', require('./src/routes/authRoutes'));
@@ -128,6 +137,12 @@ server.requestTimeout = 30 * 60 * 1000;
 // headersTimeout 保持 Node 默认 60s：仅用于等待请求头，不应拉伸到 31 分钟（会被慢连接耗尽资源）。
 // keepAliveTimeout 略大于 headersTimeout 即可，让客户端能复用连接。
 server.keepAliveTimeout = 65 * 1000;
+
+// 兜底捕获未处理的 Promise rejection：记录上下文后继续运行，避免进程带病静默。
+// 各 async 路由已自行 try/catch，这里的日志用于暴露遗漏点。
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
 
 /* ---------------- 优雅关闭 ---------------- */
 // SIGTERM/SIGINT 收到后停止接受新连接、关闭 idle keep-alive、等待 in-flight 请求完成，

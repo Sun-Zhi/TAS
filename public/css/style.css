@@ -566,6 +566,9 @@ table.tbl tbody tr.sel:hover { background: rgba(49, 226, 242, .18); }
 .empty { text-align: center; padding: 54px 20px; color: var(--text-mute); }
 .empty .ico { font-size: 40px; opacity: .35; margin-bottom: 10px; }
 
+/* ---------- 加载更多 ---------- */
+.load-more { display: flex; justify-content: center; padding: 14px 18px 18px; }
+
 /* ---------- 提示条 ---------- */
 #toast {
   position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-24px);

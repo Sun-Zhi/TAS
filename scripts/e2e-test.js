@@ -1,20 +1,40 @@
 /* 端到端自测：node scripts/e2e-test.js */
 'use strict';
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'taskassign-e2e-'));
-const PORT = 32000 + (process.pid % 1000);
-const BASE = `http://127.0.0.1:${PORT}`;
+// 测试实例凭据，支持环境变量覆盖（TEST_ADMIN_PASSWORD / TEST_DEMO_PASSWORD），
+// 默认值仅用于临时测试进程；生产部署请勿沿用
+const ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || 'admin123';
+const DEMO_PASSWORD = process.env.TEST_DEMO_PASSWORD || 'demo1234';
+// 端口通过实际探测确定，避免 pid 派生端口被其他进程占用导致测试失败
+let PORT;
+let BASE;
+
+async function findFreePort(startPort) {
+  for (let port = startPort; port < startPort + 200; port++) {
+    const free = await new Promise((resolve) => {
+      const probe = net.createServer();
+      probe.unref();
+      probe.once('error', () => resolve(false));
+      probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(true)));
+    });
+    if (free) return port;
+  }
+  throw new Error(`从 ${startPort} 起连续 200 个端口均被占用，无法启动测试服务`);
+}
 let server;
 let serverOutput = '';
-let pass = 0, fail = 0;
+let pass = 0;
 
+// 首败即中止：失败后继续跑只会级联出大量误导性结果
 function ok(cond, label, extra = '') {
-  if (cond) { pass++; console.log(`  ✓ ${label}`); }
-  else { fail++; console.log(`  ✗ ${label} ${extra}`); }
+  if (cond) { pass++; console.log(`  ✓ ${label}`); return; }
+  throw new Error(`断言失败：${label}${extra ? `（${extra}）` : ''}`);
 }
 
 async function req(path, { method = 'GET', token, body, raw } = {}) {
@@ -46,9 +66,9 @@ async function startServer() {
       PORT: String(PORT),
       DATA_DIR: path.join(TEST_ROOT, 'data'),
       UPLOAD_DIR: path.join(TEST_ROOT, 'uploads'),
-      ADMIN_PASSWORD: 'admin123',
+      ADMIN_PASSWORD,
       ENABLE_DEMO_ACCOUNTS: '1',
-      DEMO_PASSWORD: '123456',
+      DEMO_PASSWORD,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -76,37 +96,49 @@ async function stopServer() {
 }
 
 (async () => {
+  PORT = await findFreePort(32000 + (process.pid % 1000));
+  BASE = `http://127.0.0.1:${PORT}`;
   await startServer();
   console.log('\n【1】登录与鉴权');
-  const admin = await login('admin', 'admin123');
-  const pm = await login('pm01', '123456');
-  const dev = await login('dev01', '123456');
+  const admin = await login('admin', ADMIN_PASSWORD);
+  const pm = await login('pm01', DEMO_PASSWORD);
+  const dev = await login('dev01', DEMO_PASSWORD);
   ok(admin && pm && dev, '三种角色均可登录');
   const bad = await req('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } });
   ok(bad.status === 401, '错误密码被拒绝');
-  let limited;
+  const lockStatuses = [];
   for (let i = 0; i < 6; i++) {
-    limited = await req('/api/auth/login', {
+    lockStatuses.push((await req('/api/auth/login', {
       method: 'POST', body: { username: 'rate-limit-probe', password: 'wrong' },
-    });
+    })).status);
   }
-  ok(limited.status === 429, '连续登录失败触发 429 限流');
+  ok(lockStatuses.slice(0, 5).every((status) => status === 401), '前 5 次错误口令正常返回 401');
+  ok(lockStatuses[5] === 429, '第 6 次错误口令触发 429 锁定');
   ok((await req('/api/tasks')).status === 401, '未登录访问受保护接口返回 401');
 
   console.log('\n【2】管理员创建用户');
   const uname = 'exec_' + Date.now().toString().slice(-6);
   const cu = await req('/api/users', {
     method: 'POST', token: admin,
-    body: { username: uname, password: '123456', name: '测试执行者', role: 'executor', dept: '测试部' },
+    body: { username: uname, password: DEMO_PASSWORD, name: '测试执行者', role: 'executor', dept: '测试部' },
   });
   ok(cu.status === 201, '管理员创建执行者成功', JSON.stringify(cu.data));
   const newUserId = cu.data.id;
   const cu2 = await req('/api/users', {
     method: 'POST', token: pm,
-    body: { username: 'x1', password: '123456', name: 'x', role: 'executor' },
+    body: { username: 'x1', password: DEMO_PASSWORD, name: 'x', role: 'executor' },
   });
   ok(cu2.status === 403, '分配者无权创建用户');
-  ok((await req('/api/auth/login', { method: 'POST', body: { username: uname, password: '123456' } })).status === 200,
+  const weakCreate = await req('/api/users', {
+    method: 'POST', token: admin,
+    body: { username: 'weak_probe', password: '12345678', name: '弱口令', role: 'executor' },
+  });
+  ok(weakCreate.status === 400, '管理员创建纯数字弱口令用户被拒绝');
+  ok((await req('/api/users', {
+    method: 'POST', token: admin,
+    body: { username: 'blank_probe', password: '        ', name: '空白', role: 'executor' },
+  })).status === 400, '纯空白密码被拒绝');
+  ok((await req('/api/auth/login', { method: 'POST', body: { username: uname, password: DEMO_PASSWORD } })).status === 200,
     '新建用户可正常登录');
 
   const responsibilityView = await req('/api/users/responsibilities', { token: pm });
@@ -152,7 +184,7 @@ async function stopServer() {
   ok(devCreate.status === 403, '执行者无权创建任务');
 
   console.log('\n【4】数据可见范围');
-  const newUserToken = await login(uname, '123456');
+  const newUserToken = await login(uname, DEMO_PASSWORD);
   const seeAdmin = await req('/api/tasks', { token: admin });
   const seePm = await req('/api/tasks', { token: pm });
   const seeExec = await req('/api/tasks', { token: newUserToken });
@@ -160,7 +192,7 @@ async function stopServer() {
   ok(seePm.data.tasks.every((t) => t.creator_username === 'pm01'), '分配者只看到自己创建的任务');
   ok(seeExec.data.tasks.every((t) => t.assignee_id === newUserId), '执行者只看到派发给自己的任务');
   const otherView = await req('/api/tasks/' + taskId, { token: dev });
-  ok(otherView.status === 403, '无关执行者无法查看他人任务详情');
+  ok(otherView.status === 404, '无关执行者查看他人任务详情返回 404（与不存在一致）');
 
   console.log('\n【5】执行与完成');
   const wrongRequestForm = new FormData();
@@ -169,7 +201,6 @@ async function stopServer() {
     method: 'POST', token: dev, body: wrongRequestForm,
   });
   ok(wrongDone.status === 403, '非执行人无法提交完成申请');
-  await new Promise((r) => setTimeout(r, 1200));
   const executorConfirm = await req('/api/tasks/' + taskId, {
     method: 'PATCH', token: newUserToken, body: { status: 'completed' },
   });
@@ -288,7 +319,9 @@ async function stopServer() {
   ok(executorScreen.data.executors.length === 0,
     '无任务的执行者大屏不显示空分布记录');
   ok(scr.data.trend.length === 7, '近 7 日趋势数据完整');
-  ok(scr.data.summary.avg_duration_text !== '-', `平均耗时：${scr.data.summary.avg_duration_text}`);
+  // 断言与 humanDuration 输出格式一致（如「0分」「1小时5分」「2天3小时15分」），
+  // 而非仅 != '-'，确保平均耗时计算真实产出可读时长
+  ok(/^(\d+天)?(\d+小时)?\d+分$/.test(scr.data.summary.avg_duration_text), `平均耗时：${scr.data.summary.avg_duration_text}`);
 
   console.log('\n【7】按执行者导出');
   const exp = await req(`/api/export?assignee_id=${newUserId}`, { token: admin, raw: true });
@@ -305,16 +338,45 @@ async function stopServer() {
   console.log('\n【8】清理校验');
   const delUser = await req('/api/users/' + newUserId, { method: 'DELETE', token: admin });
   ok(delUser.status === 400, '有关联任务的用户不允许删除（提示改为停用）');
+  const weakReset = await req('/api/users/' + newUserId, {
+    method: 'PATCH', token: admin, body: { password: '12345678' },
+  });
+  ok(weakReset.status === 400, '管理员重置为纯数字弱口令被拒绝');
   const resetPassword = await req('/api/users/' + newUserId, {
-    method: 'PATCH', token: admin, body: { password: 'changed-password' },
+    method: 'PATCH', token: admin, body: { password: 'changed1234' },
   });
   ok(resetPassword.status === 200, '管理员可重置用户密码');
   ok((await req('/api/tasks', { token: newUserToken })).status === 401, '密码重置后旧会话立即失效');
 
-  console.log(`\n${'='.repeat(46)}\n  通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(46)}\n`);
-  if (fail) process.exitCode = 1;
+  console.log('\n【9】用户自行修改密码');
+  const weakSelf = await req('/api/auth/password', {
+    method: 'POST', token: pm, body: { oldPassword: DEMO_PASSWORD, newPassword: '12345678' },
+  });
+  ok(weakSelf.status === 400, '修改为纯数字弱口令被拒绝');
+  const selfChange = await req('/api/auth/password', {
+    method: 'POST', token: pm, body: { oldPassword: DEMO_PASSWORD, newPassword: 'pmnew1234' },
+  });
+  ok(selfChange.status === 200 && selfChange.data.relogin, '用户可使用正确旧密码修改密码');
+  ok((await req('/api/tasks', { token: pm })).status === 401, '自行改密后旧会话立即失效');
+  ok((await req('/api/auth/login', {
+    method: 'POST', body: { username: 'pm01', password: 'pmnew1234' },
+  })).status === 200, '用户可使用新密码重新登录');
+
+  console.log('\n【10】改密端点限流');
+  const changeStatuses = [];
+  for (let i = 0; i < 11; i++) {
+    changeStatuses.push((await req('/api/auth/password', {
+      method: 'POST', token: dev, body: { oldPassword: 'wrong-old-password', newPassword: 'newPass123' },
+    })).status);
+  }
+  // 计数先到阈值才拒绝：前 10 次正常计数并返回 400（旧密码错误），第 11 次触发 429
+  ok(changeStatuses.slice(0, 10).every((status) => status === 400), '前 10 次改密尝试正常返回 400');
+  ok(changeStatuses[10] === 429, '第 11 次改密尝试触发 429 限流');
+
+  console.log(`\n${'='.repeat(46)}\n  全部 ${pass} 项断言通过\n${'='.repeat(46)}\n`);
 })().catch((e) => {
-  console.error('测试异常:', e);
+  console.error('测试异常:', e.message);
+  console.log(`\n  已通过 ${pass} 项，失败 1 项（后续断言已跳过）\n`);
   if (serverOutput) console.error(serverOutput);
   process.exitCode = 1;
 }).finally(stopServer);
