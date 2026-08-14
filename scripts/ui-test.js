@@ -28,6 +28,7 @@ function makeJar() {
   // key: cookie name -> value；仅用于同源单实例测试
   const map = new Map();
   return {
+    map,
     setFromResponse(res) {
       const setCookies = res.headers.getSetCookie ? res.headers.getSetCookie() : [];
       for (const sc of setCookies) {
@@ -84,7 +85,7 @@ function makeXHR(jar) {
     setRequestHeader(k, v) { this._reqHeaders[k] = v; }
     addEventListener(type, cb) { (this._listeners[type] ||= []).push(cb); }
     removeEventListener(type, cb) { this._listeners[type] = (this._listeners[type] || []).filter((f) => f !== cb); }
-    get _upload() { return { addEventListener: (t, cb) => { (this._uploadListeners[t] ||= []).push(cb); } }; }
+    get upload() { return { addEventListener: (t, cb) => { (this._uploadListeners[t] ||= []).push(cb); } }; }
     _emit(type, ev) { (this._listeners[type] || []).forEach((cb) => cb(ev)); }
     _emitUpload(type, ev) { (this._uploadListeners[type] || []).forEach((cb) => cb(ev)); }
     getResponseHeader(name) {
@@ -139,24 +140,27 @@ function buildHtml(pageFile, scripts) {
   let html = fs.readFileSync(path.join(PUBLIC, pageFile), 'utf8');
   // 去掉外链脚本，改为内联真实脚本内容（保持依赖顺序）
   html = html.replace(/<script src="\/js\/[^"]+"[^>]*><\/script>/g, '');
-  const inline = scripts
-    .map((name) => `<script>\n${fs.readFileSync(path.join(PUBLIC, 'js', name), 'utf8')}\n</script>`)
-    .join('\n');
-  // 在 </body> 前插入内联脚本
-  html = html.replace('</body>', inline + '\n</body>');
+  const inline = scripts.map((name) => fs.readFileSync(path.join(PUBLIC, 'js', name), 'utf8')).join('\n;\n');
+  // 合并为单个 <script> 块：jsdom 不共享跨 <script> 标签的顶层 const/let 作用域，
+  // 分开内联会导致「Identifier '$' has already been declared」；用函数替换器避免 $$ 被正则折叠为 $。
+  html = html.replace('</body>', () => `<script>\n${inline}\n</script>\n</body>`);
   return html;
 }
 
 function newDom(html, jar, { url }) {
+  let dom;
   const vc = new VirtualConsole();
-  // 屏蔽 jsdom 未实现的导航等噪声（我们自行断言 location.href 变化）
+  // 屏蔽 jsdom 未实现的导航等噪声；jsdom 不做真实跳转，仅记录「已触发导航」供断言使用
   vc.on('jsdomError', (e) => {
     const msg = String((e && e.message) || e);
-    if (/Not implemented: navigation/i.test(msg)) return;
+    if (/Not implemented: navigation/i.test(msg)) {
+      if (dom && dom.window) dom.window.__navigatedTo = 'attempted';
+      return;
+    }
     // 其它脚本错误打印出来便于排查
     console.error('  [jsdomError]', msg);
   });
-  const dom = new JSDOM(html, {
+  dom = new JSDOM(html, {
     runScripts: 'dangerously',
     pretendToBeVisual: true,
     url,
@@ -166,14 +170,8 @@ function newDom(html, jar, { url }) {
       window.XMLHttpRequest = makeXHR(jar);
       if (!window.AbortController) window.AbortController = AbortController;
       if (!window.CSS) window.CSS = { escape: (s) => String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&') };
-      // 拦截导航：记录目标 URL 而不真正跳转，方便断言
+      // 记录导航触发标记（jsdom 下 location.href 赋值会触发 Not implemented 导航错误）
       window.__navigatedTo = null;
-      const desc = Object.getOwnPropertyDescriptor(window, 'location');
-      // 用 defineProperty 包装 setter 不可行（location 为特殊对象），改为拦截 assign/href
-      window.location.assign = (u) => { window.__navigatedTo = String(u); };
-      try {
-        Object.defineProperty(window, '_origHref', { value: window.location.href, configurable: true });
-      } catch {}
     },
   });
   return dom;
@@ -223,8 +221,7 @@ async function testLoginPage() {
   doc.querySelector('#loginForm').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
   await waitFor(() => jar.has('ta_token'), { timeout: 8000 });
   ok(jar.has('ta_token'), '正确密码登录成功并获得会话 Cookie');
-  ok(window.__navigatedTo === BASE + '/index.html' || window.location.href.endsWith('/index.html'),
-    '登录成功跳转到工作台', window.__navigatedTo || window.location.href);
+  ok(window.__navigatedTo === 'attempted', '登录成功触发跳转到工作台', String(window.__navigatedTo));
   dom.window.close();
 }
 
@@ -236,11 +233,7 @@ async function testWorkbenchAndCreateTask() {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: 'admin', password: 'AdminTest123' }),
   });
-  const setCookies = loginRes.headers.getSetCookie ? loginRes.headers.getSetCookie() : [];
-  for (const sc of setCookies) {
-    const pair = sc.split(';')[0]; const idx = pair.indexOf('=');
-    if (idx >= 0) jar.map.set(pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
-  }
+  jar.setFromResponse(loginRes);
   ok(jar.has('ta_token'), '已为工作台获取管理员会话');
 
   const html = buildHtml('index.html', ['util.js', 'modal.js', 'due-picker.js', 'task-actions.js', 'users.js', 'app.js']);
@@ -310,9 +303,9 @@ async function testAuthGuard() {
   const html = buildHtml('index.html', ['util.js', 'modal.js', 'due-picker.js', 'task-actions.js', 'users.js', 'app.js']);
   const dom = newDom(html, jar, { url: BASE + '/index.html' });
   const { window } = dom;
-  // init() 中 /api/auth/me 返回 401 → api() 设置 location.href='\/login.html'
-  await waitFor(() => (window.__navigatedTo && window.__navigatedTo.endsWith('/login.html')) || window.location.href.endsWith('/login.html'), { timeout: 8000 });
-  ok(true, '未登录访问工作台被重定向到登录页');
+  // init() 中 /api/auth/me 返回 401 → api() 设置 location.href='/login.html'，jsdom 下触发导航标记
+  await waitFor(() => window.__navigatedTo === 'attempted', { timeout: 8000 });
+  ok(true, '未登录访问工作台触发跳转到登录页');
   dom.window.close();
 }
 
@@ -325,11 +318,7 @@ async function testScreenPage() {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: 'admin', password: 'AdminTest123' }),
   });
-  const setCookies = loginRes.headers.getSetCookie ? loginRes.headers.getSetCookie() : [];
-  for (const sc of setCookies) {
-    const pair = sc.split(';')[0]; const idx = pair.indexOf('=');
-    if (idx >= 0) jar.map.set(pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
-  }
+  jar.setFromResponse(loginRes);
   const screenHtml = fs.readFileSync(path.join(PUBLIC, 'screen.html'), 'utf8');
   const dom = newDom(screenHtml, jar, { url: BASE + '/screen.html' });
   const { window } = dom;
@@ -347,6 +336,52 @@ async function testScreenPage() {
   dom.window.close();
 }
 
+async function testTaskModalOutsideClick() {
+  console.log('\n【UI-5】任务弹窗：点击外部不关闭，且关闭按钮仍可用');
+  const jar = makeJar();
+  const loginRes = await fetch(BASE + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'AdminTest123' }),
+  });
+  jar.setFromResponse(loginRes);
+  const html = buildHtml('index.html', ['util.js', 'modal.js', 'due-picker.js', 'task-actions.js', 'users.js', 'app.js']);
+  const dom = newDom(html, jar, { url: BASE + '/index.html' });
+  const { window } = dom;
+  const doc = window.document;
+  await waitFor(() => {
+    const u = doc.querySelector('#uName');
+    return u && u.textContent && u.textContent !== '-';
+  }, { timeout: 10000 });
+  doc.querySelector('#btnNewTask').click();
+  await sleep(50);
+  const mask = doc.querySelector('#taskModal');
+  ok(mask.classList.contains('show'), '点击「发布新任务」弹窗已打开');
+
+  // 回归：点弹窗内部输入框不应被抢焦点（CRITICAL 修复）
+  const secondInput = doc.querySelector('#tfDesc');
+  if (secondInput) {
+    secondInput.focus(); // 模拟用户 mousedown 聚焦到该输入框
+    secondInput.dispatchEvent(new window.Event('click', { bubbles: true }));
+  }
+  await sleep(50);
+  ok(secondInput && doc.activeElement === secondInput, '点击/聚焦第二个输入框后焦点保持在该输入框，未被抢回第一个元素');
+
+  // 模拟点击遮罩外部（e.target === mask），断言不被关闭且焦点拉回弹窗内
+  mask.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await sleep(50);
+  ok(mask.classList.contains('show'), '点击遮罩外部后弹窗仍保持打开（未误关闭）');
+  const firstFocusable = mask.querySelector('[autofocus], input:not([type="hidden"]):not([hidden]):not([disabled]), textarea:not([hidden]):not([disabled]), .round-select-trigger:not([hidden]):not([disabled]), button:not([hidden]):not([disabled])');
+  ok(firstFocusable && doc.activeElement === firstFocusable, '点击遮罩外部后焦点回到弹窗内首个可聚焦元素');
+
+  // 弹窗内「关闭 / 取消」按钮（data-close）仍可正常关闭
+  const closeBtn = mask.querySelector('[data-close]');
+  ok(!!closeBtn, '弹窗内存在「关闭/取消」按钮（data-close）');
+  closeBtn.click();
+  await sleep(50);
+  ok(!mask.classList.contains('show'), '点击内部关闭按钮仍可正常关闭弹窗');
+  dom.window.close();
+}
+
 (async () => {
   console.log('UI 端到端测试（目标：' + BASE + '，隔离实例，不影响生产）\n');
   try {
@@ -354,6 +389,7 @@ async function testScreenPage() {
     await testWorkbenchAndCreateTask();
     await testAuthGuard();
     await testScreenPage();
+    await testTaskModalOutsideClick();
   } catch (e) {
     failed++;
     console.error('  [异常]', e.message);

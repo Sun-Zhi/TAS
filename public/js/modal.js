@@ -1,6 +1,11 @@
 /* ============ 弹窗：打开/关闭/确认框/焦点圈 ============ */
 'use strict';
 
+// 弹窗内首个可聚焦元素：供 openModal 自动聚焦、以及「点击遮罩外部不关闭」时把焦点拉回弹窗内使用
+function firstFocusable(mask) {
+  return mask.querySelector('[autofocus], input:not([type="hidden"]):not([hidden]):not([disabled]), textarea:not([hidden]):not([disabled]), .round-select-trigger:not([hidden]):not([disabled]), button:not([hidden]):not([disabled])');
+}
+
 function openModal(id) {
   const mask = $(id);
   mask._returnFocus = document.activeElement;
@@ -9,7 +14,7 @@ function openModal(id) {
   requestAnimationFrame(() => {
     // :not([hidden]) 排除带 hidden 属性的元素（如详情弹窗中 hidden 的上传控件），
     // 否则 focus() 落空，键盘用户无法感知弹窗已打开
-    const target = mask.querySelector('[autofocus], input:not([type="hidden"]):not([hidden]):not([disabled]), textarea:not([hidden]):not([disabled]), .round-select-trigger:not([hidden]):not([disabled]), button:not([hidden]):not([disabled])');
+    const target = firstFocusable(mask);
     if (target) target.focus();
   });
 }
@@ -51,7 +56,21 @@ $('#btnConfirmAction').addEventListener('click', () => settleConfirm(true));
 
 $$('.modal-mask').forEach((mask) => {
   mask.addEventListener('click', (e) => {
-    if (e.target === mask || e.target.hasAttribute('data-close')) closeModal('#' + mask.id);
+    // 弹窗内的「关闭 / 取消」按钮（data-close 属性）始终可关闭弹窗
+    if (e.target.hasAttribute('data-close')) { closeModal('#' + mask.id); return; }
+    // 标记 data-close-on-mask="never" 的弹窗（如任务编辑/发布）禁止点击遮罩外部关闭，
+    // 避免误触丢失已填写内容；同时把焦点拉回弹窗内首个可聚焦元素，保持 aria-modal 语义，
+    // 避免键盘用户点外部后焦点落到 <body> 需要多按几次 Tab。
+    if (mask.getAttribute('data-close-on-mask') === 'never') {
+      // 只有真正点到遮罩空白处（e.target === mask）才拉回焦点；
+      // 点弹窗内部任何元素（输入框、按钮等）时不抢焦点，否则表单填不了。
+      if (e.target === mask) {
+        const f = firstFocusable(mask);
+        if (f && document.activeElement !== f) f.focus();
+      }
+      return;
+    }
+    if (e.target === mask) closeModal('#' + mask.id);
   });
 });
 
