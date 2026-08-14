@@ -124,6 +124,7 @@ function makeXHR(jar) {
         this.status = res.status;
         this.responseText = await res.text();
         this.response = this.responseText;
+        if (process.env.UI_DEBUG) console.error('  [XHR]', this.method, this.url, '->', res.status, '| body:', this.responseText.slice(0, 200));
         this._emit('load', {});
       } catch (err) {
         this._emit('error', { message: String(err && err.message || err) });

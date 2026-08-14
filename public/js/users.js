@@ -25,10 +25,27 @@ async function loadUsers() {
     <tbody>${rows}</tbody></table>`;
 }
 
+// 密码可见性：默认掩码，管理员确认临时密码时可手动切换显示；
+// 每次打开弹窗都复位为掩码，避免上次切换状态残留
+function resetPasswordField() {
+  $('#ufPassword').type = 'password';
+  $('#btnToggleUfPwd').textContent = '显示';
+  $('#btnToggleUfPwd').setAttribute('aria-pressed', 'false');
+}
+
+$('#btnToggleUfPwd').addEventListener('click', () => {
+  const input = $('#ufPassword');
+  const showing = input.type === 'text';
+  input.type = showing ? 'password' : 'text';
+  $('#btnToggleUfPwd').textContent = showing ? '显示' : '隐藏';
+  $('#btnToggleUfPwd').setAttribute('aria-pressed', String(!showing));
+});
+
 $('#btnNewUser').addEventListener('click', () => {
   $('#userModalTitle').textContent = '新建用户';
   $('#userForm').reset();
   $('#ufId').value = '';
+  resetPasswordField();
   syncRoundSelects();
   $('#ufUsername').disabled = false;
   $('#ufPwdReq').style.display = '';
@@ -48,6 +65,7 @@ function editUser(id) {
   syncRoundSelects();
   $('#ufDept').value = u.dept || '';
   $('#ufPassword').value = '';
+  resetPasswordField();
   $('#ufPwdReq').style.display = 'none';
   $('#ufPwdHint').textContent = '留空表示不修改密码';
   openModal('#userModal');

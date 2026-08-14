@@ -88,6 +88,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_due      ON tasks(due_at);
 CREATE INDEX IF NOT EXISTS idx_att_task       ON attachments(task_id);
 CREATE INDEX IF NOT EXISTS idx_log_task       ON task_logs(task_id);
+-- 登录成功路径会按 expires_at 清理过期会话，索引避免每次登录全表扫描
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 `);
 
 // 兼容已部署的旧数据库：完成申请在发布者确认前仍属于执行中状态。
@@ -248,6 +250,16 @@ function seed() {
   const ts = nowISO();
   const configuredAdminPassword = process.env.ADMIN_PASSWORD;
   const adminPassword = configuredAdminPassword || crypto.randomBytes(24).toString('base64url');
+  // 同一次种子初始化中演示账号的共享口令只计算一次 scrypt 并复用哈希串：
+  // 口令本就相同，破解任一哈希即可登录其余账号，共享盐+摘要不引入额外风险，
+  // 但可把首次启动的同步 scrypt 从最多 6 次降到 2 次。
+  // 管理员口令不参与复用：若 ADMIN_PASSWORD 与演示口令巧合相同，独立哈希
+  // 避免哈希串完全一致而泄露「两个账号口令相同」的事实。
+  const seedHashCache = new Map();
+  const hashForSeed = (pwd) => {
+    if (!seedHashCache.has(pwd)) seedHashCache.set(pwd, hashPassword(pwd));
+    return seedHashCache.get(pwd);
+  };
   const seeds = [['admin', adminPassword, '系统管理员', 'admin', '信息中心']];
   if (isTruthyEnv(process.env.ENABLE_DEMO_ACCOUNTS)) {
     // 演示账号口令从环境变量读取，未设置时随机生成并一次性输出——避免硬编码弱口令
@@ -264,10 +276,11 @@ function seed() {
     );
   }
   for (const [username, pwd, name, role, dept] of seeds) {
-    insert.run(username, hashPassword(pwd), name, role, dept, ts);
+    const stored = username === 'admin' ? hashPassword(pwd) : hashForSeed(pwd);
+    insert.run(username, stored, name, role, dept, ts);
   }
   if (configuredAdminPassword) {
-    console.log('[db] 已使用 ADMIN_PASSWORD 初始化管理员账号 admin');
+    console.warn('[db] 已使用 ADMIN_PASSWORD 初始化管理员账号 admin');
   } else {
     announceCredentials(`[db] 已初始化管理员账号 admin；本次生成的随机密码（仅本次显示，请立即记录）：${adminPassword}`);
   }
@@ -277,15 +290,14 @@ function seed() {
 
 seed();
 
-// 固定 dummy hash：用于账号不存在时跑一次 scrypt 校验抹平时序差，防止枚举攻击
-const DUMMY_HASH = hashPassword(crypto.randomBytes(24).toString('hex'));
+// 预置 dummy hash：登录路径只要求其格式可解析、参数安全——校验结果本就丢弃，
+// 因此无需在启动时真实执行 scrypt 生成随机值，直接用固定形态的 salt/digest 预置，
+// 省去每次启动约 1 秒的同步 scrypt，且登录校验路径的成本与真实哈希完全一致。
+// 用于账号不存在时跑一次 scrypt 校验抹平时序差，防止枚举攻击。
+const DUMMY_HASH = formatScryptHash('1'.repeat(32), Buffer.alloc(64, 0x64), SCRYPT_OPTS);
 // 旧格式 dummy hash：与新格式 DUMMY_HASH 配对，让所有登录路径都执行
 // 「真实校验 + 一次固定成本 dummy」共 2 次 scrypt 且总成本恒定，
 // 消除跨账号/跨哈希格式的登录延迟差（账号存在性枚举）。
-const DUMMY_HASH_LEGACY = (() => {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(crypto.randomBytes(24).toString('hex'), salt, 64, LEGACY_SCRYPT_OPTS);
-  return `scrypt$${salt}$${derived.toString('hex')}`;
-})();
+const DUMMY_HASH_LEGACY = `scrypt$${'2'.repeat(32)}$${Buffer.alloc(64, 0x65).toString('hex')}`;
 
 module.exports = { db, hashPassword, hashPasswordAsync, verifyPassword, verifyPasswordAsync, isLegacyHash, parseStoredHash, nowISO, UPLOAD_DIR, DATA_DIR, ROOT, DUMMY_HASH, DUMMY_HASH_LEGACY };

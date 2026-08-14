@@ -581,6 +581,14 @@ function updateTaskDetail(task, user, body) {
     }
     sets.push('assignee_id = ?'); args.push(assignee.id);
     changes.push(`执行人改为 ${assignee.name}`);
+  } else if (redispatching) {
+    // 重新派发意味着重新进入执行：即使执行人未变化，也必须仍是启用中的执行者。
+    // 只校验变化时的 assignee 会留下缺口——退回任务可通过 API 保持原 assignee_id
+    // 不变绕过前端重选校验，继续挂在已停用账号上，服务端需兜底。
+    const current = db.prepare('SELECT role, active FROM users WHERE id = ?').get(task.assignee_id);
+    if (!current || current.role !== 'executor' || current.active !== 1) {
+      return { status: 400, body: { error: '当前执行人已停用，重新派发请改选启用中的执行人' } };
+    }
   }
 
   if (!sets.length) return { status: 400, body: { error: '没有需要修改的内容' } };

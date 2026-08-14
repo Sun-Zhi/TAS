@@ -15,6 +15,8 @@ uploads/
 *.log
 *.tmp
 *.temp
+# 编辑器崩溃残留（如 task-actions.js.tmp.<随机后缀>）
+*.tmp.*
 
 # Editor and OS files
 .idea/

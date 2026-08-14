@@ -125,11 +125,11 @@ app.use((err, req, res, next) => {
 setInterval(cleanupSessions, 30 * 60 * 1000).unref();
 
 const server = app.listen(PORT, HOST, () => {
-  console.log('');
-  console.log('  任务分配系统已启动');
-  console.log(`  工作台：http://${HOST}:${PORT}/index.html`);
-  console.log(`  大屏：  http://${HOST}:${PORT}/screen.html`);
-  console.log('');
+  console.warn('');
+  console.warn('  任务分配系统已启动');
+  console.warn(`  工作台：http://${HOST}:${PORT}/index.html`);
+  console.warn(`  大屏：  http://${HOST}:${PORT}/screen.html`);
+  console.warn('');
 });
 
 // Large LAN uploads may legitimately take longer than Node's default 5-minute request window.
@@ -148,7 +148,7 @@ process.on('unhandledRejection', (reason) => {
 // SIGTERM/SIGINT 收到后停止接受新连接、关闭 idle keep-alive、等待 in-flight 请求完成，
 // 再关闭数据库并退出；30 秒超时兜底避免 zombie。
 function shutdown(signal) {
-  console.log(`[shutdown] 收到 ${signal}，开始优雅关闭...`);
+  console.warn(`[shutdown] 收到 ${signal}，开始优雅关闭...`);
   server.close((err) => {
     if (err) console.error('[shutdown] server.close 错误', err);
     try {
@@ -156,7 +156,7 @@ function shutdown(signal) {
     } catch (closeErr) {
       console.error('[shutdown] db.close 错误', closeErr);
     }
-    console.log('[shutdown] 数据库已关闭，进程退出');
+    console.warn('[shutdown] 数据库已关闭，进程退出');
     process.exit(0);
   });
   if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();

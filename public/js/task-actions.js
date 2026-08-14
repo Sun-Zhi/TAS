@@ -172,7 +172,24 @@ async function openTaskEditor(id) {
   $('#tfId').value = t.id;
   $('#tfTitle').value = t.title;
   $('#tfDesc').value = t.description || '';
+  // 先清除上一次编辑遗留的占位选项：不清理会累积重复项污染下拉菜单，
+  // 还会让「重新派发」分支命中其他任务的残留占位，绕过重选有效执行人的校验
+  $('#tfAssignee').querySelectorAll('option[data-inactive-placeholder]').forEach((option) => option.remove());
   $('#tfAssignee').value = t.assignee_id;
+  // 原执行人若已停用或改角色，不在「启用中的执行者」下拉选项中，value 会被静默清空，
+  // 保存时提交 assignee_id=0 被服务端 400 拒绝，仅修改描述/截止时间也会被卡死。
+  // 普通编辑：追加占位选项保持原执行人不变；重新派发（已退回）必须重选有效执行人，不加占位。
+  if (!isReturned && t.assignee_id && !$('#tfAssignee').value) {
+    const placeholder = document.createElement('option');
+    placeholder.value = String(t.assignee_id);
+    placeholder.textContent = `${t.assignee_name}（已停用）`;
+    placeholder.dataset.inactivePlaceholder = '1';
+    // disabled option 不参与表单序列化：此占位值依赖保存路径直接读 select.value 提交
+    // （app.js #btnSaveTask）；若保存改为 FormData 收集表单，此处需同步调整。
+    placeholder.disabled = true; // 仅展示原值，不允许从菜单再选回
+    $('#tfAssignee').appendChild(placeholder);
+    $('#tfAssignee').value = String(t.assignee_id);
+  }
   $('#tfCategory').value = t.category;
   $('#tfPriority').value = t.priority;
   syncRoundSelects();

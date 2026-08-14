@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'taskassign-auth-'));
 process.env.DATA_DIR = path.join(TEST_ROOT, 'data');
@@ -15,7 +16,7 @@ process.env.ENABLE_DEMO_ACCOUNTS = '0';
 
 const {
   db, hashPassword, hashPasswordAsync, verifyPassword, verifyPasswordAsync,
-  isLegacyHash, parseStoredHash,
+  isLegacyHash, parseStoredHash, DUMMY_HASH, DUMMY_HASH_LEGACY,
 } = require('../src/db');
 const { validatePassword } = require('../src/utils');
 const authRoutes = require('../src/routes/authRoutes');
@@ -37,6 +38,67 @@ function legacyHash(plain) {
 }
 
 const NEW_HASH_PATTERN = /^scrypt\$\d+\$\d+\$\d+\$[0-9a-f]{32}\$[0-9a-f]{128}$/;
+
+/** 用独立临时库跑一次种子初始化（ADMIN_PASSWORD 与 DEMO_PASSWORD 故意相同），
+ * 返回 { admin, demo, demoShared }：验证管理员哈希与演示哈希隔离、演示账号间复用哈希 */
+function probeSeedHashes() {
+  return new Promise((resolve, reject) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskassign-seed-'));
+    const dbPath = JSON.stringify(path.join(__dirname, '..', 'src', 'db.js'));
+    const script = `
+      const { db } = require(${dbPath});
+      const rows = db.prepare('SELECT username, password FROM users ORDER BY username').all();
+      const demo = rows.filter((row) => row.username !== 'admin');
+      console.log(JSON.stringify({
+        admin: (rows.find((row) => row.username === 'admin') || {}).password || '',
+        demo: (demo[0] || {}).password || '',
+        demoShared: demo.length > 1 && demo.every((row) => row.password === demo[0].password),
+      }));
+      db.close();
+    `;
+    const child = spawn(process.execPath, ['-e', script], {
+      env: {
+        ...process.env,
+        DATA_DIR: path.join(dir, 'data'),
+        UPLOAD_DIR: path.join(dir, 'uploads'),
+        ADMIN_PASSWORD: 'same-secret-for-both',
+        DEMO_PASSWORD: 'same-secret-for-both',
+        ENABLE_DEMO_ACCOUNTS: '1',
+        // 演示账号在生产环境会被拒绝启动，显式指定避免继承生产环境变量
+        NODE_ENV: 'test',
+      },
+    });
+    let output = '';
+    let stderrOutput = '';
+    let settled = false;
+    // spawn 失败或子进程挂起时保证 Promise 有结局并清理临时目录，避免测试进程无限等待
+    const failProbe = (error) => {
+      if (settled) return;
+      settled = true;
+      fs.rmSync(dir, { recursive: true, force: true });
+      reject(error);
+    };
+    const timer = setTimeout(() => failProbe(new Error('种子探针超时')), 30000);
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { stderrOutput += chunk; });
+    child.on('error', (error) => failProbe(error));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (code !== 0) {
+        reject(new Error(`种子探针进程退出码 ${code}${stderrOutput ? `: ${stderrOutput.slice(0, 300)}` : ''}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(output.trim()));
+      } catch {
+        reject(new Error('种子探针输出解析失败'));
+      }
+    });
+  });
+}
 
 async function main() {
   console.log('\n密码哈希回归');
@@ -107,7 +169,22 @@ async function main() {
   ok(newGateState.maxObserved <= 2 && newGateState.active === 0,
     '新格式账号校验同样执行两次受闸门保护的 scrypt');
 
-  console.log('\n【6】密码强度校验');
+  console.log('\n【6】预置 dummy hash（登录防枚举）');
+  ok(NEW_HASH_PATTERN.test(DUMMY_HASH) && parseStoredHash(DUMMY_HASH)?.opts.N === 2 ** 17,
+    'DUMMY_HASH 为合法新格式（预置生成，启动无需真实 scrypt）');
+  ok(/^scrypt\$[0-9a-f]{32}\$[0-9a-f]{128}$/.test(DUMMY_HASH_LEGACY),
+    'DUMMY_HASH_LEGACY 为合法旧格式');
+  ok(!(await verifyPasswordAsync('any-password', DUMMY_HASH)), 'DUMMY_HASH 校验任意口令均返回 false');
+  ok(!(await verifyPasswordAsync('any-password', DUMMY_HASH_LEGACY)), 'DUMMY_HASH_LEGACY 校验任意口令均返回 false');
+
+  console.log('\n【7】种子初始化哈希隔离');
+  const seedHashes = await probeSeedHashes();
+  ok(seedHashes && seedHashes.admin !== seedHashes.demo,
+    'ADMIN_PASSWORD 与演示口令相同时，管理员与演示账号哈希不同');
+  ok(seedHashes && seedHashes.demoShared,
+    '演示账号共享口令时复用同一条哈希（省启动 scrypt）');
+
+  console.log('\n【8】密码强度校验');
   ok(validatePassword('short') !== null, '少于 8 位被拒绝');
   ok(validatePassword('        ') !== null, '纯空白密码被拒绝');
   ok(validatePassword('12345678') !== null, '纯数字密码被拒绝');

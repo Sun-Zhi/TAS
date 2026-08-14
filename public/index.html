@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>工作台 · 任务分配系统</title>
-<link rel="stylesheet" href="/css/style.css?v=20260811-10">
+<link rel="stylesheet" href="/css/style.css?v=20260813-1">
 </head>
 <body>
 
@@ -254,7 +254,10 @@
         </div>
         <div class="field">
           <label for="ufPassword">密码 <span class="req" id="ufPwdReq">*</span></label>
-          <input class="input" id="ufPassword" type="text" placeholder="至少 8 位">
+          <div class="pwd-row">
+            <input class="input" id="ufPassword" type="password" placeholder="至少 8 位" autocomplete="new-password">
+            <button type="button" class="btn ghost sm" id="btnToggleUfPwd" aria-pressed="false">显示</button>
+          </div>
           <div class="hint" id="ufPwdHint">编辑时留空表示不修改密码</div>
         </div>
       </form>

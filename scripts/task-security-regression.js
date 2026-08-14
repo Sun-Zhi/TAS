@@ -153,11 +153,16 @@ async function main() {
   const assignerBId = addUser('assigner', 'assigner_b');
   const executorAId = addUser('executor', 'executor_a');
   const executorBId = addUser('executor', 'executor_b');
+  const executorCId = addUser('executor', 'executor_c');
   const admin = addSession(adminId);
   const assignerA = addSession(assignerAId);
+  const assignerB = addSession(assignerBId);
   const executorA = addSession(executorAId);
+  const executorB = addSession(executorBId);
+  const executorC = addSession(executorCId);
   const taskA = addTask(`${marker}_task_a`, assignerAId, executorAId);
   const taskB = addTask(`${marker}_task_b`, assignerBId, executorBId);
+  const taskC = addTask(`${marker}_task_c`, assignerBId, executorBId);
 
   server = spawn(process.execPath, ['server.js'], {
     cwd: path.join(__dirname, '..'),
@@ -362,6 +367,13 @@ async function main() {
   ).get(taskA, `${marker}_valid_append.txt`);
   ok(validResult && validResult.kind === 'task', '发布者追加附件仍标记为 task');
 
+  // 为第 6 节构造「退回任务」：需在停用执行者 B 之前由其本人退回（停用会销毁其会话）
+  const returnB = await request(`/api/tasks/${taskB}/return`, {
+    method: 'POST', token: executorB, body: { reason: `${marker}_return_for_redispatch` },
+  });
+  ok(returnB.status === 200, '执行者 B 退回任务以构造重新派发场景', JSON.stringify(returnB.data));
+  ok(Boolean(db.prepare('SELECT returned_at FROM tasks WHERE id = ?').get(taskB).returned_at), '任务 B 已标记退回');
+
   console.log('\n【5】LIKE 转义与 active 参数校验');
   const pctTask = addTask(`${marker}_100%真实`, assignerAId, executorAId);
   const pctWild = addTask(`${marker}_100X真实`, assignerAId, executorAId);
@@ -392,6 +404,54 @@ async function main() {
   ok(activeOff.status === 200, "active='0' 可正常停用", JSON.stringify(activeOff.data));
   ok(db.prepare('SELECT active FROM users WHERE id = ?').get(executorBId).active === 0,
     '停用后数据库 active 为 0');
+
+  console.log('\n【6】停用执行人后的任务编辑与重新派发');
+  // 执行人已停用但 assignee_id 未变化：仅修改其他字段应允许（前端编辑不会被逼改派）
+  const keepAssignee = await request(`/api/tasks/${taskC}`, {
+    method: 'PATCH', token: assignerB, body: { title: `${marker}_keep_assignee`, assignee_id: executorBId },
+  });
+  ok(keepAssignee.status === 200, '执行人已停用时，提交未变化的 assignee_id 仍可编辑其他字段',
+    JSON.stringify(keepAssignee.data));
+  ok(db.prepare('SELECT assignee_id FROM tasks WHERE id = ?').get(taskC).assignee_id === executorBId,
+    '编辑后执行人保持原值不变');
+
+  // 重新派发意味着重新进入执行：即使执行人未变化，也必须仍是启用中的执行者。
+  // 否则退回任务可通过 API 保持原 assignee_id 绕过前端重选校验，继续挂在已停用账号上
+  const redispatchInactive = await request(`/api/tasks/${taskB}`, {
+    method: 'PATCH', token: assignerB, body: { title: `${marker}_redispatch_keep`, assignee_id: executorBId },
+  });
+  ok(redispatchInactive.status === 400, '退回任务重新派发时保持已停用执行人不变被拒绝',
+    JSON.stringify(redispatchInactive.data));
+  ok(Boolean(db.prepare('SELECT returned_at FROM tasks WHERE id = ?').get(taskB).returned_at),
+    '被拒绝的重新派发不改变退回状态');
+
+  // 对照：重新派发给启用中的执行者 C 应成功并清除退回标记
+  const redispatchActive = await request(`/api/tasks/${taskB}`, {
+    method: 'PATCH', token: assignerB, body: { title: `${marker}_redispatch_c`, assignee_id: executorCId },
+  });
+  ok(redispatchActive.status === 200, '重新派发给启用中的执行者成功', JSON.stringify(redispatchActive.data));
+  ok(db.prepare('SELECT returned_at FROM tasks WHERE id = ?').get(taskB).returned_at === null,
+    '重新派发后清除退回标记');
+
+  // 对照：退回任务保持启用中的执行人不变（新校验分支的放行路径）应成功
+  const returnC = await request(`/api/tasks/${taskB}/return`, {
+    method: 'POST', token: executorC, body: { reason: `${marker}_return_for_keep_active` },
+  });
+  ok(returnC.status === 200, '执行者 C 退回任务以构造放行场景', JSON.stringify(returnC.data));
+  const redispatchSameActive = await request(`/api/tasks/${taskB}`, {
+    method: 'PATCH', token: assignerB, body: { title: `${marker}_redispatch_same_active`, assignee_id: executorCId },
+  });
+  ok(redispatchSameActive.status === 200, '退回任务保持启用中的执行人不变可重新派发',
+    JSON.stringify(redispatchSameActive.data));
+
+  const deactivateA = await request(`/api/users/${executorAId}`, {
+    method: 'PATCH', token: admin, body: { active: 0 },
+  });
+  ok(deactivateA.status === 200, '停用执行者 A 以构造改派场景', JSON.stringify(deactivateA.data));
+  const reassignInactive = await request(`/api/tasks/${taskB}`, {
+    method: 'PATCH', token: assignerB, body: { assignee_id: executorAId },
+  });
+  ok(reassignInactive.status === 400, '改派给已停用执行者被拒绝');
 
   console.log(`\n${'='.repeat(48)}\n  通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);
   if (fail) throw new Error(`安全回归失败 ${fail} 项`);

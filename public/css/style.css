@@ -179,6 +179,10 @@ select.native-select {
 .input::placeholder { color: var(--text-mute); }
 textarea.input { resize: vertical; min-height: 88px; }
 .hint { color: var(--text-mute); font-size: 12px; margin-top: 5px; }
+/* 密码输入行：输入框 + 显示/隐藏切换按钮 */
+.pwd-row { display: flex; gap: 8px; align-items: center; }
+.pwd-row .input { flex: 1; }
+.pwd-row .btn { flex: none; }
 .datetime-input {
   cursor: pointer;
   padding-right: 40px;
