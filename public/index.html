@@ -56,7 +56,7 @@
         <button data-status="returned">已退回</button>
         <button data-status="completed">已完成</button>
       </div>
-      <select class="input" id="fAssignee"><option value="">全部执行者</option></select>
+      <select class="input" id="fAssignee"><option value="">全部接收人</option></select>
       <select class="input" id="fCategory"><option value="">全部类别</option></select>
       <input class="input search" id="fSearch" placeholder="搜索任务标题 / 描述 / 执行人">
       <button class="btn ghost sm" id="btnReset">重置</button>
@@ -116,9 +116,9 @@
         </div>
         <div class="grid2">
           <div class="field">
-            <label for="tfAssignee">执行人 <span class="req">*</span></label>
+            <label for="tfAssignee">任务接收人 <span class="req">*</span></label>
             <select class="input" id="tfAssignee" required></select>
-            <div class="hint">保存后任务自动派发给该执行者</div>
+            <div class="hint">保存后任务自动派发给该用户</div>
           </div>
           <div class="field">
             <label for="tfCategory">任务类别</label>
@@ -341,9 +341,9 @@
     <div class="modal-head"><h3 id="exportModalTitle">导出任务清单</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
       <div class="field">
-        <label for="exAssignee">按执行者导出</label>
-        <select class="input" id="exAssignee"><option value="">全部执行者</option></select>
-        <div class="hint">导出该执行者名下所有任务，含任务类别、状态与耗时</div>
+        <label for="exAssignee">按任务接收人导出</label>
+        <select class="input" id="exAssignee"><option value="">全部接收人</option></select>
+        <div class="hint">导出该任务接收人名下所有任务，含任务类别、状态与耗时</div>
       </div>
       <div class="field">
         <label for="exStatus">任务状态</label>
@@ -380,11 +380,11 @@
 </div>
 
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="/js/util.js?v=20260813-1"></script>
-<script src="/js/modal.js?v=20260813-1"></script>
-<script src="/js/due-picker.js?v=20260813-1"></script>
-<script src="/js/task-actions.js?v=20260813-1"></script>
-<script src="/js/users.js?v=20260813-1"></script>
-<script src="/js/app.js?v=20260813-1"></script>
+<script src="/js/util.js?v=20260825-1"></script>
+<script src="/js/modal.js?v=20260825-1"></script>
+<script src="/js/due-picker.js?v=20260825-1"></script>
+<script src="/js/task-actions.js?v=20260825-1"></script>
+<script src="/js/users.js?v=20260825-1"></script>
+<script src="/js/app.js?v=20260825-1"></script>
 </body>
 </html>

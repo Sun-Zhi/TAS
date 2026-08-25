@@ -135,7 +135,7 @@ $('#btnConfirmDone').addEventListener('click', async () => {
 });
 
 async function confirmCompletion(id) {
-  if (!await askConfirm('执行人已提交完成申请。确认后任务将正式完成并记录耗时。', '确认任务完成', '确认完成')) return;
+  if (!await askConfirm('任务接收人已提交完成申请。确认后任务将正式完成并记录耗时。', '确认任务完成', '确认完成')) return;
   try {
     const result = await api('/api/tasks/' + id, { method: 'PATCH', body: { status: 'completed' } });
     toast(`任务已确认完成，本次耗时 ${result.duration_text}`, 'ok');
@@ -165,10 +165,17 @@ async function removeTask(id) {
 }
 
 async function openTaskEditor(id) {
-  const { task: t } = await api('/api/tasks/' + id);
+  const [{ task: t }, { users: taskAssignees }] = await Promise.all([
+    api('/api/tasks/' + id),
+    api('/api/tasks/' + id + '/assignees'),
+  ]);
+  populateTaskAssignees(taskAssignees);
   closeModal('#detailModal');
   const isReturned = Boolean(t.returned);
-  $('#taskModalTitle').textContent = isReturned ? '编辑并重新派发任务' : '编辑任务';
+  const repairingSelfAssignment = Boolean(t.awaiting_confirmation && t.creator_id === t.assignee_id);
+  $('#taskModalTitle').textContent = repairingSelfAssignment
+    ? '重新指派异常任务'
+    : (isReturned ? '编辑并重新派发任务' : '编辑任务');
   $('#tfId').value = t.id;
   $('#tfTitle').value = t.title;
   $('#tfDesc').value = t.description || '';
@@ -176,19 +183,19 @@ async function openTaskEditor(id) {
   // 还会让「重新派发」分支命中其他任务的残留占位，绕过重选有效执行人的校验
   $('#tfAssignee').querySelectorAll('option[data-inactive-placeholder]').forEach((option) => option.remove());
   $('#tfAssignee').value = t.assignee_id;
-  // 原执行人若已停用或改角色，不在「启用中的执行者」下拉选项中，value 会被静默清空，
+  // 原接收人若已停用、改角色或不在当前发布者的可选范围，value 会被静默清空，
   // 保存时提交 assignee_id=0 被服务端 400 拒绝，仅修改描述/截止时间也会被卡死。
-  // 普通编辑：追加占位选项保持原执行人不变；重新派发（已退回）必须重选有效执行人，不加占位。
-  if (!isReturned && t.assignee_id && !$('#tfAssignee').value) {
+  // 普通编辑保留只读占位；重新派发时原接收人已不可用，必须重新选择有效接收人。
+  if (t.assignee_id && !$('#tfAssignee').value) {
     const placeholder = document.createElement('option');
     placeholder.value = String(t.assignee_id);
-    placeholder.textContent = `${t.assignee_name}（已停用）`;
+    placeholder.textContent = `${t.assignee_name}（当前任务接收人）`;
     placeholder.dataset.inactivePlaceholder = '1';
     // disabled option 不参与表单序列化：此占位值依赖保存路径直接读 select.value 提交
     // （app.js #btnSaveTask）；若保存改为 FormData 收集表单，此处需同步调整。
-    placeholder.disabled = true; // 仅展示原值，不允许从菜单再选回
+    placeholder.disabled = true;
     $('#tfAssignee').appendChild(placeholder);
-    $('#tfAssignee').value = String(t.assignee_id);
+    $('#tfAssignee').value = isReturned ? '' : String(t.assignee_id);
   }
   $('#tfCategory').value = t.category;
   $('#tfPriority').value = t.priority;
@@ -198,7 +205,7 @@ async function openTaskEditor(id) {
   // 记录任务是否已退回：#btnSaveTask 据此对重新派发校验截止时间
   $('#tfDue').dataset.returned = isReturned ? '1' : '';
   $('#tfFileField').style.display = 'none';
-  $('#btnSaveTask').textContent = isReturned ? '保存并重新派发' : '保存修改';
+  $('#btnSaveTask').textContent = repairingSelfAssignment ? '保存并重新指派' : (isReturned ? '保存并重新派发' : '保存修改');
   openModal('#taskModal');
 }
 

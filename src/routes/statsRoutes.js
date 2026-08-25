@@ -13,8 +13,11 @@ const SCREEN_SELECT = `
   SELECT t.id, t.title, t.category, t.priority, t.status, t.assignee_id,
          t.due_at, t.created_at, t.completed_at, t.completion_requested_at,
          t.returned_at, t.return_reason,
-         au.name AS assignee_name, au.dept AS assignee_dept
-  FROM tasks t JOIN users au ON au.id = t.assignee_id
+         au.name AS assignee_name, au.dept AS assignee_dept, au.role AS assignee_role,
+         cu.name AS creator_name, cu.role AS creator_role
+  FROM tasks t
+  JOIN users au ON au.id = t.assignee_id
+  JOIN users cu ON cu.id = t.creator_id
 `;
 
 function durationText(ms) {
@@ -54,25 +57,21 @@ function buildScreenSummary(nowIso, todayIso) {
   };
 }
 
-function buildScreenTaskLists(isExecutor, userId) {
-  const userArgs = isExecutor ? [userId] : [];
-  const whereUser = isExecutor ? ' AND t.assignee_id = ?' : '';
+function buildScreenTaskLists() {
   const running = db.prepare(`${SCREEN_SELECT}
-    WHERE t.status='in_progress' AND t.returned_at IS NULL${whereUser}
+    WHERE t.status='in_progress' AND t.returned_at IS NULL
     ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
-             t.created_at DESC LIMIT 60`).all(...userArgs).map(decorate);
+             t.created_at DESC LIMIT 60`).all().map(decorate);
   const done = db.prepare(`${SCREEN_SELECT}
-    WHERE t.status='completed'${whereUser}
-    ORDER BY t.completed_at DESC LIMIT 60`).all(...userArgs).map(decorate);
+    WHERE t.status='completed'
+    ORDER BY t.completed_at DESC LIMIT 60`).all().map(decorate);
   return { running, done };
 }
 
-function buildScreenExecutors(isExecutor, userId, nowIso) {
-  // 仅统计实际承担过任务的执行者：不显示管理员、发布者，也不显示 0 任务的空记录。
-  // executor 访问大屏时仍只保留自己这一行。
-  const executorWhere = isExecutor ? ' AND u.id = ?' : '';
+function buildScreenRecipients(nowIso) {
+  // 按实际任务接收人统计，覆盖管理员、分配者、执行者等所有角色；不显示 0 任务空记录。
   const rows = db.prepare(`
-    SELECT u.id, u.name, u.dept, COUNT(t.id) AS total,
+    SELECT u.id, u.name, u.role, u.dept, COUNT(t.id) AS total,
            SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NULL THEN 1 ELSE 0 END) AS running,
            SUM(CASE WHEN t.status='in_progress' AND t.returned_at IS NOT NULL THEN 1 ELSE 0 END) AS returned,
            SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS done,
@@ -80,15 +79,21 @@ function buildScreenExecutors(isExecutor, userId, nowIso) {
            AVG(CASE WHEN t.status='completed' AND t.completed_at IS NOT NULL
                     THEN (julianday(t.completed_at)-julianday(t.created_at))*86400000 END) AS avg_ms
       FROM users u JOIN tasks t ON t.assignee_id = u.id
-      WHERE u.role = 'executor'${executorWhere}
-     GROUP BY u.id, u.name, u.dept
-     ${isExecutor ? '' : 'ORDER BY total DESC, done DESC'}
-  `).all(...(isExecutor ? [nowIso, userId] : [nowIso]));
-  return rows.map((e) => ({
-    id: e.id, name: e.name, dept: e.dept || '', total: Number(e.total),
-    running: Number(e.running), returned: Number(e.returned), done: Number(e.done), overdue: Number(e.overdue),
-    rate: e.total ? Math.round((Number(e.done) / Number(e.total)) * 100) : 0,
-    avg_duration_text: durationText(e.avg_ms),
+     GROUP BY u.id, u.name, u.role, u.dept
+     ORDER BY total DESC, done DESC
+  `).all(nowIso);
+  return rows.map((recipient) => ({
+    id: recipient.id,
+    name: recipient.name,
+    role: recipient.role,
+    dept: recipient.dept || '',
+    total: Number(recipient.total),
+    running: Number(recipient.running),
+    returned: Number(recipient.returned),
+    done: Number(recipient.done),
+    overdue: Number(recipient.overdue),
+    rate: recipient.total ? Math.round((Number(recipient.done) / Number(recipient.total)) * 100) : 0,
+    avg_duration_text: durationText(recipient.avg_ms),
   }));
 }
 
@@ -132,17 +137,15 @@ function buildScreenTrend() {
 }
 
 router.get('/screen', requireLogin, (req, res) => {
-  // 大屏按角色控制可见性：executor 只看自己作为 assignee 的任务明细；
-  // admin/assigner 看全公司。聚合数字（summary/categories/trend）对所有角色可见，不含个人隐私。
-  const isExecutor = req.user.role === 'executor';
+  // 大屏是全局监控视图：所有已登录角色看到相同的汇总、任务明细和人员分布。
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const todayISO = today.toISOString();
   const nowISO = new Date().toISOString();
 
   const summary = buildScreenSummary(nowISO, todayISO);
-  const { running, done } = buildScreenTaskLists(isExecutor, req.user.id);
-  const executors = buildScreenExecutors(isExecutor, req.user.id, nowISO);
+  const { running, done } = buildScreenTaskLists();
+  const recipients = buildScreenRecipients(nowISO);
   const categories = buildScreenCategories();
   const trend = buildScreenTrend();
 
@@ -151,7 +154,9 @@ router.get('/screen', requireLogin, (req, res) => {
     summary,
     running,
     done,
-    executors,
+    recipients,
+    // 保留旧字段，避免既有大屏调用方在缓存刷新期间报错。
+    executors: recipients,
     categories,
     trend,
   });
@@ -173,10 +178,19 @@ router.get('/overview', requireLogin, (req, res) => {
                     THEN (julianday(t.completed_at)-julianday(t.created_at))*86400000 END) AS avg_ms
       FROM tasks t WHERE ${sc.sql}
   `).get(now, ...sc.args);
+  const pendingToConfirm = req.user.role === 'admin'
+    ? Number(row.pending_confirmation || 0)
+    : Number(db.prepare(
+      `SELECT COUNT(*) AS count FROM tasks t
+        WHERE t.creator_id = ? AND t.status='in_progress'
+          AND t.returned_at IS NULL AND t.completion_requested_at IS NOT NULL`
+    ).get(req.user.id).count);
+
   res.json({
     total: Number(row.total || 0),
     running: Number(row.running || 0),
     pending_confirmation: Number(row.pending_confirmation || 0),
+    pending_confirmation_to_confirm: pendingToConfirm,
     returned: Number(row.returned || 0),
     done: Number(row.done || 0),
     overdue: Number(row.overdue || 0),
@@ -191,21 +205,26 @@ router.get('/export', requireLogin, (req, res) => {
   const where = [];
   const args = [];
 
-  // 管理员可导出任意执行者；分配者只能导出自己创建的；执行者只能导出自己的
-  if (req.user.role === 'assigner') { where.push('t.creator_id = ?'); args.push(req.user.id); }
-  else if (req.user.role === 'executor') { where.push('t.assignee_id = ?'); args.push(req.user.id); }
-  else where.push('1=1');
+  // 与工作台保持同一可见范围，再叠加导出筛选；筛选条件不得扩大角色范围。
+  const sc = scopeClause(req.user);
+  where.push(sc.sql);
+  args.push(...sc.args);
 
-  let who = '全部执行者';
+  let who = '全部接收人';
   if (assignee_id) {
-    if (req.user.role === 'executor' && Number(assignee_id) !== req.user.id) {
-      return res.status(403).send('无权导出其他执行者的任务');
-    }
+    const assigneeId = Number(assignee_id);
     where.push('t.assignee_id = ?');
-    args.push(Number(assignee_id));
-    const u = db.prepare('SELECT name FROM users WHERE id = ?').get(Number(assignee_id));
-    who = u ? u.name : `用户${assignee_id}`;
-  } else if (req.user.role === 'executor') {
+    args.push(assigneeId);
+    // 文件名也必须遵守与导出数据相同的行级范围，不能通过任意用户 ID 查询全局姓名。
+    const visibleAssignee = db.prepare(`
+      SELECT u.name
+      FROM tasks t
+      JOIN users u ON u.id = t.assignee_id
+      WHERE t.assignee_id = ? AND ${sc.sql}
+      LIMIT 1
+    `).get(assigneeId, ...sc.args);
+    who = visibleAssignee ? visibleAssignee.name : '所选接收人';
+  } else if (req.user.role !== 'admin') {
     who = req.user.name;
   }
 

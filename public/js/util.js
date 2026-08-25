@@ -15,7 +15,7 @@ const state = {
   taskHasMore: false,
   loadingMore: false,
   tasksPage: 0,
-  executors: [],
+  taskAssignees: [],
   users: [],
   responsibilityUsers: [],
   filters: { status: '', assignee_id: '', category: '', q: '' },

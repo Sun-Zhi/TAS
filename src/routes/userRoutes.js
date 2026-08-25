@@ -57,6 +57,31 @@ router.get('/executors', requireLogin, (req, res) => {
   res.json({ users: rows });
 });
 
+/** 发布任务时可选的接收人：执行者可派发给执行者或分配者，其他发布角色保持原规则。 */
+router.get('/task-assignees', requireLogin, (req, res) => {
+  const roles = req.user.role === 'executor' ? ['executor', 'assigner'] : ['executor'];
+  const placeholders = roles.map(() => '?').join(', ');
+  const rows = db.prepare(
+    `SELECT id, name, role, dept FROM users WHERE role IN (${placeholders}) AND active = 1 AND id <> ?
+      ORDER BY CASE role WHEN 'executor' THEN 0 ELSE 1 END, dept, name`
+  ).all(...roles, req.user.id);
+  res.json({ users: rows });
+});
+
+/** 筛选/导出候选：只返回当前用户实际可见任务中出现过的接收人，包含历史或已停用账号。 */
+router.get('/task-filter-assignees', requireLogin, (req, res) => {
+  const scoped = req.user.role === 'admin'
+    ? { sql: '1=1', args: [] }
+    : { sql: '(t.creator_id = ? OR t.assignee_id = ?)', args: [req.user.id, req.user.id] };
+  const rows = db.prepare(`
+    SELECT DISTINCT u.id, u.name, u.role, u.dept
+    FROM tasks t
+    JOIN users u ON u.id = t.assignee_id
+    WHERE ${scoped.sql}
+    ORDER BY CASE u.role WHEN 'executor' THEN 0 WHEN 'assigner' THEN 1 ELSE 2 END, u.dept, u.name
+  `).all(...scoped.args);
+  res.json({ users: rows });
+});
 /** 执行者岗位分工（所有已登录用户可查看） */
 router.get('/responsibilities', requireLogin, (req, res) => {
   const scope = req.user.role === 'admin' ? '' : 'AND active = 1';
@@ -159,7 +184,7 @@ router.patch('/:id', requireRole('admin'), async (req, res, next) => {
       const pending = db.prepare(
         "SELECT COUNT(*) c FROM tasks WHERE assignee_id = ? AND status='in_progress'"
       ).get(id).c;
-      if (role !== 'executor' && pending > 0) {
+      if (!['executor', 'assigner'].includes(role) && pending > 0) {
         return res.status(400).json({ error: `该用户尚有 ${pending} 个执行中的任务，无法切换角色` });
       }
       sets.push('role = ?'); args.push(role);

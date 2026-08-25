@@ -22,27 +22,56 @@ async function init() {
     $('#scopeDesc').textContent = '管理员视角 · 可查看系统内全部任务';
     $('#responsibilityDesc').textContent = '管理员可定义每位执行者负责的岗位职责';
   } else if (me.role === 'assigner') {
-    $('#scopeDesc').textContent = '分配者视角 · 展示我创建并派发的任务';
+    $('#scopeDesc').textContent = '分配者视角 · 展示我发布或承接的任务';
   } else {
-    $('#scopeDesc').textContent = '执行者视角 · 展示派发给我的任务';
+    $('#scopeDesc').textContent = '执行者视角 · 展示我发布或承接的任务';
   }
-  if (me.role === 'admin' || me.role === 'assigner') $('#btnNewTask').style.display = '';
-  if (me.role === 'executor') $('#fAssignee').closest('.round-select').style.display = 'none';
+  $('#btnNewTask').style.display = '';
 
-  await loadExecutors();
+  await loadAssigneeOptions();
   await loadCategories();
   await refresh();
   initDuePicker();
 }
 
-async function loadExecutors() {
-  const { users } = await api('/api/users/executors');
-  state.executors = users;
-  const opts = users.map((u) => `<option value="${u.id}">${esc(u.name)}${u.dept ? ' · ' + esc(u.dept) : ''}</option>`).join('');
-  $('#tfAssignee').innerHTML = '<option value="">请选择执行人</option>' + opts;
-  $('#fAssignee').innerHTML = '<option value="">全部执行者</option>' + opts;
-  $('#exAssignee').innerHTML = '<option value="">全部执行者</option>' + opts;
+function uniqueUsers(users) {
+  const byId = new Map();
+  users.forEach((user) => byId.set(user.id, user));
+  return Array.from(byId.values());
+}
+
+function populateTaskAssignees(users) {
+  const showRoles = users.some((user) => user.role !== 'executor');
+  const options = users.map((user) => {
+    const role = showRoles ? ` · ${ROLE_TEXT[user.role]}` : '';
+    const dept = user.dept ? ` · ${esc(user.dept)}` : '';
+    return `<option value="${user.id}" data-role="${user.role}">${esc(user.name)}${role}${dept}</option>`;
+  }).join('');
+  $('#tfAssignee').innerHTML = '<option value="">请选择任务接收人</option>' + options;
   syncRoundSelects();
+}
+
+async function loadAssigneeOptions() {
+  const [{ users: visibleAssignees }, { users: taskAssignees }] = await Promise.all([
+    api('/api/users/task-filter-assignees'),
+    api('/api/users/task-assignees'),
+  ]);
+  state.taskAssignees = taskAssignees;
+
+  const filterUsers = uniqueUsers([
+    ...visibleAssignees,
+    ...taskAssignees,
+    ...(state.me.role === 'admin' ? [] : [state.me]),
+  ]);
+  const showRoles = filterUsers.some((user) => user.role !== 'executor');
+  const filterOptions = filterUsers.map((user) => {
+    const role = showRoles ? ` · ${ROLE_TEXT[user.role]}` : '';
+    const dept = user.dept ? ` · ${esc(user.dept)}` : '';
+    return `<option value="${user.id}">${esc(user.name)}${role}${dept}</option>`;
+  }).join('');
+  $('#fAssignee').innerHTML = '<option value="">全部接收人</option>' + filterOptions;
+  $('#exAssignee').innerHTML = '<option value="">全部接收人</option>' + filterOptions;
+  populateTaskAssignees(taskAssignees);
 }
 
 async function refresh() {
@@ -60,9 +89,10 @@ async function loadStats() {
     <div class="stat red"><div class="k">已逾期</div><div class="v">${s.overdue}</div></div>
     <div class="stat"><div class="k">平均完成耗时</div><div class="v sm">${esc(s.avg_duration_text)}</div></div>`;
 
-  const showNotice = state.me.role !== 'executor' && s.pending_confirmation > 0;
+  const actionablePending = Number(s.pending_confirmation_to_confirm || 0);
+  const showNotice = actionablePending > 0;
   $('#completionNotice').hidden = !showNotice;
-  $('#completionNoticeCount').textContent = String(s.pending_confirmation || 0);
+  $('#completionNoticeCount').textContent = String(actionablePending);
 }
 
 const TASKS_PAGE_SIZE = 200;
@@ -125,6 +155,10 @@ function isCreatorOrAdmin(t) {
   return t.creator_id === state.me.id || state.me.role === 'admin';
 }
 
+function isCurrentTaskRecipient(t) {
+  return t.assignee_id === state.me.id && ['executor', 'assigner'].includes(state.me.role);
+}
+
 /** 任务状态徽章：列表（带脉冲圆点）与详情共用同一份判定逻辑 */
 function taskStatusBadge(t, withDot = true) {
   const dot = withDot ? '<i class="dot-live"></i>' : '';
@@ -145,7 +179,7 @@ function renderTaskRow(t) {
       : `<span style="color:var(--warn)">已进行 ${elapsed(t.created_at)}</span>${t.due_at ? `<div class="cell-sub">要求 ${fmt(t.due_at)}</div>` : ''}`;
 
   const canRequestDone = t.status === 'in_progress' && !t.returned && !t.awaiting_confirmation &&
-    t.assignee_id === state.me.id && state.me.role === 'executor';
+    isCurrentTaskRecipient(t);
   const canConfirmDone = t.awaiting_confirmation && isCreatorOrAdmin(t);
   const waitingButton = t.awaiting_confirmation && t.assignee_id === state.me.id
     ? '<button class="btn ghost sm" disabled>等待发布者确认</button>' : '';
@@ -185,7 +219,7 @@ function renderTasks() {
 
   if (!list.length) {
     $('#taskTableWrap').innerHTML =
-      `<div class="empty"><div class="ico">📋</div>暂无任务${state.me.role === 'executor' ? '，当前没有派发给你的任务' : ''}</div>`;
+      '<div class="empty"><div class="ico">📋</div>暂无与你相关的任务</div>';
     $('#btnBatchDel').style.display = 'none';
     return;
   }
@@ -200,7 +234,7 @@ function renderTasks() {
   $('#taskTableWrap').innerHTML = `<table class="tbl">
     <thead><tr>
       ${cbHead}
-      <th>编号</th><th>任务</th><th>执行人</th><th>优先级</th><th>状态</th><th>创建时间</th><th>耗时 / 进度</th><th>操作</th>
+      <th>编号</th><th>任务</th><th>任务接收人</th><th>优先级</th><th>状态</th><th>创建时间</th><th>耗时 / 进度</th><th>操作</th>
     </tr></thead>
     <tbody>${list.map(renderTaskRow).join('')}</tbody></table>${loadMoreButtonHtml()}`;
 
@@ -265,18 +299,19 @@ async function loadTaskDetail(id) {
   const { task: t, attachments, logs } = await api('/api/tasks/' + id);
   $('#dtTitle').textContent = `T${String(t.id).padStart(4, '0')} · ${t.title}`;
 
-  // 执行人只在“标记完成”弹窗提交成果附件；任务详情仅供下载。
+  // 任务接收人只在“标记完成”弹窗提交成果附件；任务详情仅供下载。
   const canUpload = isCreatorOrAdmin(t);
   $('#dtBody').innerHTML = detailBodyHtml(t, attachmentsHtml(attachments), logsHtml(logs), canUpload);
   if (canUpload) bindDetailUpload(id);
 
   const canEdit = isCreatorOrAdmin(t);
+  const canRepairSelfAssignment = canEdit && t.awaiting_confirmation && t.creator_id === t.assignee_id;
   const canRequestDone = t.status === 'in_progress' && !t.returned && !t.awaiting_confirmation &&
-    t.assignee_id === state.me.id && state.me.role === 'executor';
-  const canConfirmDone = t.awaiting_confirmation && canEdit;
-  const waitingButton = t.awaiting_confirmation && t.assignee_id === state.me.id
+    isCurrentTaskRecipient(t);
+  const canConfirmDone = t.awaiting_confirmation && canEdit && !canRepairSelfAssignment;
+  const waitingButton = t.awaiting_confirmation && t.assignee_id === state.me.id && !canRepairSelfAssignment
     ? '<button class="btn ghost" disabled>等待发布者确认</button>' : '';
-  $('#dtFoot').innerHTML = detailFooterHtml(t, canEdit, canRequestDone, canConfirmDone, waitingButton);
+  $('#dtFoot').innerHTML = detailFooterHtml(t, canEdit, canRequestDone, canConfirmDone, waitingButton, canRepairSelfAssignment);
 
   openModal('#detailModal');
 }
@@ -303,7 +338,7 @@ function detailBodyHtml(t, attHtml, logs, canUpload) {
     <div class="detail-row"><div class="lb">状态</div><div class="vl">${taskStatusBadge(t, false)}
       <span class="pri ${t.priority}" style="margin-left:8px">优先级：${PRI_TEXT[t.priority]}</span></div></div>
     <div class="detail-row"><div class="lb">任务类别</div><div class="vl">${esc(t.category)}</div></div>
-    <div class="detail-row"><div class="lb">执行人</div><div class="vl">${esc(t.assignee_name)} ${t.assignee_dept ? `<span class="cell-sub">· ${esc(t.assignee_dept)}</span>` : ''}</div></div>
+    <div class="detail-row"><div class="lb">任务接收人</div><div class="vl">${esc(t.assignee_name)} ${t.assignee_dept ? `<span class="cell-sub">· ${esc(t.assignee_dept)}</span>` : ''}</div></div>
     <div class="detail-row"><div class="lb">创建人</div><div class="vl">${esc(t.creator_name)}</div></div>
     <div class="detail-row"><div class="lb">创建时间</div><div class="vl">${fmt(t.created_at)}</div></div>
     <div class="detail-row"><div class="lb">要求完成</div><div class="vl">${fmt(t.due_at)}</div></div>
@@ -331,11 +366,11 @@ function detailBodyHtml(t, attHtml, logs, canUpload) {
     <div class="detail-row"><div class="lb">操作记录</div><div class="vl">${logs}</div></div>`;
 }
 
-function detailFooterHtml(t, canEdit, canRequestDone, canConfirmDone, waitingButton) {
+function detailFooterHtml(t, canEdit, canRequestDone, canConfirmDone, waitingButton, canRepairSelfAssignment) {
   return `
     ${canEdit && t.status === 'completed' ? `<button class="btn ghost" data-action="reopen-task" data-id="${t.id}">重新开启</button>` : ''}
     ${canEdit ? `<button class="btn danger" data-action="remove-task" data-id="${t.id}">删除任务</button>` : ''}
-    ${canEdit && t.status === 'in_progress' && !t.awaiting_confirmation ? `<button class="btn ghost" data-action="edit-task" data-id="${t.id}">编辑任务</button>` : ''}
+    ${canEdit && t.status === 'in_progress' && (!t.awaiting_confirmation || canRepairSelfAssignment) ? `<button class="btn ghost" data-action="edit-task" data-id="${t.id}">${canRepairSelfAssignment ? '重新指派' : '编辑任务'}</button>` : ''}
     ${canRequestDone ? `<button class="btn success" data-action="mark-done" data-id="${t.id}">标记执行完成</button>` : ''}
     ${canRequestDone ? `<button class="btn danger" data-action="return-task" data-id="${t.id}">退回任务</button>` : ''}
     ${canConfirmDone ? `<button class="btn success" data-action="confirm-completion" data-id="${t.id}">确认完成</button>` : ''}
@@ -388,6 +423,7 @@ function showDetail(id) {
 $('#btnNewTask').addEventListener('click', () => {
   $('#taskModalTitle').textContent = '发布新任务';
   $('#taskForm').reset();
+  populateTaskAssignees(state.taskAssignees);
   clearDue();
   $('#tfDue').dataset.original = '';
   $('#tfDue').dataset.returned = '';
@@ -434,7 +470,7 @@ $('#btnSaveTask').addEventListener('click', async () => {
   const title = $('#tfTitle').value.trim();
   const assignee = $('#tfAssignee').value;
   if (!title) return toast('请填写任务标题', 'err');
-  if (!assignee) return toast('请指定任务执行人', 'err');
+  if (!assignee) return toast('请指定任务接收人', 'err');
   const dueValue = $('#tfDue').value;
   const dueTime = dueValue ? new Date(dueValue).getTime() : null;
   const originalDue = $('#tfDue').dataset.original;
@@ -461,7 +497,7 @@ $('#btnSaveTask').addEventListener('click', async () => {
           due_at: $('#tfDue').value || null,
         },
       });
-      toast(result.redispatched ? '任务已重新编辑并派发给执行人' : '任务已更新', 'ok');
+      toast(result.redispatched ? '任务已重新编辑并派发给任务接收人' : '任务已更新', 'ok');
     } else {
       const fd = new FormData();
       fd.append('title', title);
@@ -490,7 +526,7 @@ $('#btnSaveTask').addEventListener('click', async () => {
           btn.textContent = '服务器处理中...';
         },
       });
-      toast('任务已发布并派发给执行人', 'ok');
+      toast('任务已发布并派发给任务接收人', 'ok');
     }
     closeModal('#taskModal');
     state.pendingFiles = [];
@@ -543,7 +579,7 @@ $('#btnReset').addEventListener('click', () => {
 /* ---------------- 导出 ---------------- */
 
 $('#btnExport').addEventListener('click', () => {
-  if (state.me.role === 'executor') { $('#exAssignee').value = ''; $('#exAssignee').disabled = true; }
+  $('#exAssignee').disabled = false;
   openModal('#exportModal');
 });
 $('#btnDoExport').addEventListener('click', () => {

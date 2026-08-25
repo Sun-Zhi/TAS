@@ -14,6 +14,8 @@ const { JSDOM, VirtualConsole } = require('jsdom');
 
 const BASE = process.env.UI_BASE || 'http://127.0.0.1:12345';
 const PUBLIC = path.join(__dirname, '..', 'public');
+const ADMIN_PASSWORD = process.env.UI_ADMIN_PASSWORD || 'AdminTest123';
+const DEMO_PASSWORD = process.env.UI_DEMO_PASSWORD || 'DemoTest123';
 
 let pass = 0;
 let failed = 0;
@@ -217,7 +219,7 @@ async function testLoginPage() {
 
   // 正确密码
   jar.clear();
-  doc.querySelector('#password').value = 'AdminTest123';
+  doc.querySelector('#password').value = ADMIN_PASSWORD;
   doc.querySelector('#loginForm').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
   await waitFor(() => jar.has('ta_token'), { timeout: 8000 });
   ok(jar.has('ta_token'), '正确密码登录成功并获得会话 Cookie');
@@ -231,7 +233,7 @@ async function testWorkbenchAndCreateTask() {
   // 先用真实 fetch 登录拿会话 cookie，注入到工作台实例
   const loginRes = await fetch(BASE + '/api/auth/login', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: 'AdminTest123' }),
+    body: JSON.stringify({ username: 'admin', password: ADMIN_PASSWORD }),
   });
   jar.setFromResponse(loginRes);
   ok(jar.has('ta_token'), '已为工作台获取管理员会话');
@@ -254,7 +256,7 @@ async function testWorkbenchAndCreateTask() {
   await waitFor(() => doc.querySelector('#statGrid').children.length > 0, { timeout: 8000 });
   ok(doc.querySelector('#statGrid').children.length >= 6, '统计卡片已渲染', String(doc.querySelector('#statGrid').children.length));
 
-  // 执行者下拉已填充（loadExecutors）
+  // 任务接收人下拉已填充（loadAssigneeOptions）
   await waitFor(() => doc.querySelector('#tfAssignee').options.length > 1, { timeout: 8000 });
   ok(doc.querySelector('#tfAssignee').options.length > 1, '执行者下拉已加载');
 
@@ -297,8 +299,64 @@ async function testWorkbenchAndCreateTask() {
   return title;
 }
 
+async function testExecutorPublishTask() {
+  console.log('\n【UI-3】执行者发布任务');
+  const jar = makeJar();
+  const loginRes = await fetch(BASE + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'dev01', password: DEMO_PASSWORD }),
+  });
+  jar.setFromResponse(loginRes);
+  ok(loginRes.status === 200 && jar.has('ta_token'), '已为执行者工作台获取会话');
+
+  const html = buildHtml('index.html', ['util.js', 'modal.js', 'due-picker.js', 'task-actions.js', 'users.js', 'app.js']);
+  const dom = newDom(html, jar, { url: BASE + '/index.html' });
+  const { window } = dom;
+  const doc = window.document;
+  await waitFor(() => doc.querySelector('#uRole').textContent === '任务执行者', { timeout: 10000 });
+  ok(doc.querySelector('#btnNewTask').style.display !== 'none', '执行者可见「发布新任务」入口');
+  await waitFor(() => doc.querySelector('#tfAssignee').options.length > 1, { timeout: 8000 });
+  const options = Array.from(doc.querySelector('#tfAssignee').options);
+  const executorOption = options.find((option) => option.dataset.role === 'executor');
+  const assignerOption = options.find((option) => option.dataset.role === 'assigner');
+  ok(executorOption && assignerOption, '执行者的接收人下拉同时包含执行者和分配者');
+  const filterSelect = doc.querySelector('#fAssignee');
+  const exportSelect = doc.querySelector('#exAssignee');
+  ok(filterSelect.closest('.round-select').style.display !== 'none', '执行者的任务接收人筛选可见');
+  ok(!Array.from(filterSelect.options).some((option) => option.textContent.includes('undefined')),
+    '任务接收人筛选文案不包含 undefined');
+  ok(Array.from(filterSelect.options).some((option) => option.value === assignerOption.value),
+    '执行者列表筛选包含分配者接收人');
+  doc.querySelector('#btnExport').click();
+  ok(exportSelect.disabled === false, '执行者的导出接收人筛选可用');
+  ok(Array.from(exportSelect.options).some((option) => option.value === assignerOption.value),
+    '执行者导出筛选包含分配者接收人');
+  closeModal('#exportModal');
+
+  doc.querySelector('#btnNewTask').click();
+  const title = '执行者UI发布任务_' + Date.now();
+  doc.querySelector('#tfTitle').value = title;
+  doc.querySelector('#tfAssignee').value = assignerOption.value;
+  doc.querySelector('#tfDesc').value = '由执行者通过工作台发布给分配者';
+  doc.querySelector('#btnSaveTask').click();
+  await waitFor(() => doc.querySelector('#taskTableWrap').innerHTML.includes(title), { timeout: 12000 });
+  ok(doc.querySelector('#taskTableWrap').innerHTML.includes(title), '执行者发布的任务保留在自己的任务列表中');
+  ok(!doc.querySelector('#taskModal').classList.contains('show'), '执行者发布成功后任务弹窗关闭');
+  filterSelect.value = assignerOption.value;
+  filterSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await waitFor(() => doc.querySelector('#taskTableWrap').innerHTML.includes(title), { timeout: 8000 });
+  ok(doc.querySelector('#taskTableWrap').innerHTML.includes(title), '执行者按分配者接收人筛选仍能看到自己发布的任务');
+
+  const tasksRes = await fetch(BASE + '/api/tasks?limit=200', { headers: { Cookie: jar.header() } });
+  const tasksData = await tasksRes.json();
+  ok(tasksData.tasks.some((task) => task.title === title && task.creator_username === 'dev01' &&
+    task.assignee_id === Number(assignerOption.value)),
+    '真实 API 确认执行者已向所选分配者发布任务');
+  dom.window.close();
+}
+
 async function testAuthGuard() {
-  console.log('\n【UI-3】未登录拦截');
+  console.log('\n【UI-4】未登录拦截');
   const jar = makeJar(); // 空 cookie
   const html = buildHtml('index.html', ['util.js', 'modal.js', 'due-picker.js', 'task-actions.js', 'users.js', 'app.js']);
   const dom = newDom(html, jar, { url: BASE + '/index.html' });
@@ -310,19 +368,20 @@ async function testAuthGuard() {
 }
 
 async function testScreenPage() {
-  console.log('\n【UI-4】数据大屏页面');
+  console.log('\n【UI-5】数据大屏页面');
   // 大屏为只读展示页，无需登录即可访问（按当前实现 /api/screen 受 requireLogin 保护，
   // 这里用已登录 cookie 访问，验证页面与脚本可正常加载渲染）。
   const jar = makeJar();
   const loginRes = await fetch(BASE + '/api/auth/login', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: 'AdminTest123' }),
+    body: JSON.stringify({ username: 'admin', password: ADMIN_PASSWORD }),
   });
   jar.setFromResponse(loginRes);
   const screenHtml = fs.readFileSync(path.join(PUBLIC, 'screen.html'), 'utf8');
   const dom = newDom(screenHtml, jar, { url: BASE + '/screen.html' });
   const { window } = dom;
   const doc = window.document;
+  ok(doc.body.textContent.includes('所有角色任务分布'), '大屏显示所有角色任务分布标题');
   // screen.js 异步拉取 /api/screen 并渲染；等待渲染出内容
   try {
     await waitFor(() => {
@@ -337,11 +396,11 @@ async function testScreenPage() {
 }
 
 async function testTaskModalOutsideClick() {
-  console.log('\n【UI-5】任务弹窗：点击外部不关闭，且关闭按钮仍可用');
+  console.log('\n【UI-6】任务弹窗：点击外部不关闭，且关闭按钮仍可用');
   const jar = makeJar();
   const loginRes = await fetch(BASE + '/api/auth/login', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: 'AdminTest123' }),
+    body: JSON.stringify({ username: 'admin', password: ADMIN_PASSWORD }),
   });
   jar.setFromResponse(loginRes);
   const html = buildHtml('index.html', ['util.js', 'modal.js', 'due-picker.js', 'task-actions.js', 'users.js', 'app.js']);
@@ -387,6 +446,7 @@ async function testTaskModalOutsideClick() {
   try {
     await testLoginPage();
     await testWorkbenchAndCreateTask();
+    await testExecutorPublishTask();
     await testAuthGuard();
     await testScreenPage();
     await testTaskModalOutsideClick();

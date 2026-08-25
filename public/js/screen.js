@@ -3,6 +3,7 @@
 
 const $ = (s) => document.querySelector(s);
 const PRI = { low: '低', normal: '普通', high: '高', urgent: '紧急' };
+const ROLE = { admin: '管理员', assigner: '分配者', executor: '执行者' };
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
@@ -89,7 +90,7 @@ async function load() {
       <div class="id">T${String(t.id).padStart(4, '0')}</div>
       <div class="body">
         <div class="tt">${esc(t.title)}${t.overdue ? '<span class="chip late">逾期</span>' : ''}<span class="chip">${esc(t.category)}</span></div>
-        <div class="mt">执行人 ${esc(t.assignee_name)}　·　派发 ${fmt(t.created_at)}　·　${PRI[t.priority]}优先级</div>
+        <div class="mt">发布者 ${esc(t.creator_name)}　·　接收人 ${esc(t.assignee_name)}（${esc(ROLE[t.assignee_role] || t.assignee_role)}）　·　派发 ${fmt(t.created_at)}　·　${PRI[t.priority]}优先级</div>
       </div>
       <div class="rt"><div class="big ${t.overdue ? 'tone-late' : 'tone-run'}">${elapsed(t.created_at)}</div>
         <div style="color:#7d93b8;font-size:11px">已进行</div></div>
@@ -102,18 +103,19 @@ async function load() {
       <div class="id">T${String(t.id).padStart(4, '0')}</div>
       <div class="body">
         <div class="tt">${esc(t.title)}<span class="chip">${esc(t.category)}</span></div>
-        <div class="mt">执行人 ${esc(t.assignee_name)}　·　完成 ${fmt(t.completed_at)}</div>
+        <div class="mt">发布者 ${esc(t.creator_name)}　·　接收人 ${esc(t.assignee_name)}（${esc(ROLE[t.assignee_role] || t.assignee_role)}）　·　完成 ${fmt(t.completed_at)}</div>
       </div>
       <div class="rt"><div class="big tone-done">${esc(t.duration_text)}</div>
         <div style="color:#7d93b8;font-size:11px">执行耗时</div></div>
     </div>`).join('') : '<div class="blank">暂无已完成任务</div>';
 
-  /* 执行者分布 */
-  const maxTotal = Math.max(1, ...data.executors.map((e) => e.total));
-  $('#listRank').innerHTML = data.executors.length ? data.executors.map((e, i) => `
+  /* 所有角色任务接收分布 */
+  const recipients = data.recipients || data.executors || [];
+  const maxTotal = Math.max(1, ...recipients.map((e) => e.total));
+  $('#listRank').innerHTML = recipients.length ? recipients.map((e, i) => `
     <div class="rank">
       <div class="no ${i < 3 ? 't' + (i + 1) : ''}">${i + 1}</div>
-      <div class="nm" title="${esc(e.name)}">${esc(e.name)}</div>
+      <div class="nm" title="${esc(e.name)} · ${esc(ROLE[e.role] || e.role)}">${esc(e.name)}<small> · ${esc(ROLE[e.role] || e.role)}</small></div>
       <div class="track">
         <i class="d" style="width:${(e.done / maxTotal) * 100}%"></i>
         <i class="r" style="width:${(e.running / maxTotal) * 100}%"></i>

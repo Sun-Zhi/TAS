@@ -96,7 +96,7 @@ $('#btnSaveUser').addEventListener('click', async () => {
     await api(id ? '/api/users/' + id : '/api/users', { method: id ? 'PATCH' : 'POST', body: payload });
     toast(id ? '用户已更新' : '用户创建成功', 'ok');
     closeModal('#userModal');
-    await Promise.all([loadUsers(), loadExecutors()]);
+    await Promise.all([loadUsers(), loadAssigneeOptions()]);
   } catch (e) { toast(e.message, 'err'); }
   finally {
     btn.disabled = false;
@@ -108,7 +108,7 @@ async function toggleUser(id, active) {
   try {
     await api('/api/users/' + id, { method: 'PATCH', body: { active } });
     toast(active ? '已启用' : '已停用', 'ok');
-    await Promise.all([loadUsers(), loadExecutors()]);
+    await Promise.all([loadUsers(), loadAssigneeOptions()]);
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -117,7 +117,7 @@ async function delUser(id) {
   try {
     await api('/api/users/' + id, { method: 'DELETE' });
     toast('用户已删除', 'ok');
-    await Promise.all([loadUsers(), loadExecutors()]);
+    await Promise.all([loadUsers(), loadAssigneeOptions()]);
   } catch (e) { toast(e.message, 'err'); }
 }
 

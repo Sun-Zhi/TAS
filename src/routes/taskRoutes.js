@@ -152,6 +152,12 @@ function forwardAfterUploadFailure(req, next, error) {
   return next(error);
 }
 
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
 function runInTransaction(work) {
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -227,8 +233,23 @@ const BASE_SELECT = `
 /** 按角色注入数据可见范围 */
 function scopeClause(user) {
   if (user.role === 'admin') return { sql: '1=1', args: [] };
-  if (user.role === 'assigner') return { sql: 't.creator_id = ?', args: [user.id] };
-  return { sql: 't.assignee_id = ?', args: [user.id] };
+  return {
+    sql: '(t.creator_id = ? OR t.assignee_id = ?)',
+    args: [user.id, user.id],
+  };
+}
+
+/** 执行者发布时可选择执行者或分配者；管理员和原分配者保持只能选择执行者。 */
+function canReceiveTask(publisherRole, assigneeRole) {
+  return assigneeRole === 'executor' || (publisherRole === 'executor' && assigneeRole === 'assigner');
+}
+
+function isTaskRecipientRole(role) {
+  return role === 'executor' || role === 'assigner';
+}
+
+function isTaskRecipient(user, task) {
+  return task.assignee_id === user.id && isTaskRecipientRole(user.role);
 }
 
 function decorate(t) {
@@ -320,6 +341,26 @@ router.get('/categories', requireLogin, (req, res) => {
 
 /* ---------------- 任务详情 ---------------- */
 
+/** 编辑候选按任务创建者的当前发布规则生成，管理员代维护也不能扩大或缩小该任务范围。 */
+router.get('/:id/assignees', requireLogin, (req, res) => {
+  const id = Number(req.params.id);
+  const task = db.prepare('SELECT creator_id, assignee_id FROM tasks WHERE id = ?').get(id);
+  const canEdit = task && (req.user.role === 'admin' || task.creator_id === req.user.id);
+  if (!canEdit) return res.status(404).json({ error: '任务不存在' });
+
+  const creator = db.prepare('SELECT role FROM users WHERE id = ?').get(task.creator_id);
+  if (!creator) return res.status(409).json({ error: '任务创建者不存在，无法生成改派候选' });
+  const roles = creator.role === 'executor' ? ['executor', 'assigner'] : ['executor'];
+  const placeholders = roles.map(() => '?').join(', ');
+  const users = db.prepare(`
+    SELECT id, name, role, dept
+    FROM users
+    WHERE active = 1 AND id <> ?
+      AND (role IN (${placeholders}) OR (id = ? AND role IN ('executor', 'assigner')))
+    ORDER BY CASE role WHEN 'executor' THEN 0 ELSE 1 END, dept, name
+  `).all(task.creator_id, ...roles, task.assignee_id);
+  res.json({ users });
+});
 router.get('/:id', requireLogin, (req, res) => {
   const id = Number(req.params.id);
   const task = db.prepare(`${BASE_SELECT} WHERE t.id = ?`).get(id);
@@ -346,7 +387,7 @@ router.get('/:id', requireLogin, (req, res) => {
 
 /* ---------------- 创建任务 ---------------- */
 
-router.post('/', requireRole('admin', 'assigner'), limitTaskCreate, upload.array('files', 10), (req, res, next) => {
+router.post('/', requireRole('admin', 'assigner', 'executor'), limitTaskCreate, upload.array('files', 10), (req, res, next) => {
   const { title, description, category, priority, assignee_id, due_at } = req.body || {};
   if (!title || !String(title).trim()) {
     return rejectUploadedRequest(req, res, next, 400, '请填写任务标题');
@@ -361,15 +402,7 @@ router.post('/', requireRole('admin', 'assigner'), limitTaskCreate, upload.array
   if (String(category || '').length > TASK_CATEGORY_MAX_LEN) {
     return rejectUploadedRequest(req, res, next, 400, `任务类别不能超过 ${TASK_CATEGORY_MAX_LEN} 个字符`);
   }
-  if (!assignee_id) return rejectUploadedRequest(req, res, next, 400, '请指定任务执行人');
-
-  const assignee = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(assignee_id));
-  if (!assignee || assignee.active !== 1) {
-    return rejectUploadedRequest(req, res, next, 400, '执行人不存在或已停用');
-  }
-  if (assignee.role !== 'executor') {
-    return rejectUploadedRequest(req, res, next, 400, '所选用户不是任务执行者');
-  }
+  if (!assignee_id) return rejectUploadedRequest(req, res, next, 400, '请指定任务接收人');
 
   const normalizedDueAt = normalizeDueAt(due_at);
   if (!normalizedDueAt.valid) return rejectUploadedRequest(req, res, next, 400, '截止时间不合法');
@@ -381,6 +414,27 @@ router.post('/', requireRole('admin', 'assigner'), limitTaskCreate, upload.array
   let taskId;
   try {
     taskId = runInTransaction(() => {
+      // multer 处理附件期间角色、启用状态或接收人可能变化；写入前在同一事务内重新读取，
+      // 使权限校验与任务创建以一个明确时点生效，避免继续使用请求开始时的用户快照。
+      const publisher = db.prepare('SELECT id, role, active FROM users WHERE id = ?').get(req.user.id);
+      if (!publisher || publisher.active !== 1 || !['admin', 'assigner', 'executor'].includes(publisher.role)) {
+        throw httpError(403, '发布者账号或权限已变化，请重新登录后重试');
+      }
+      const assignee = db.prepare('SELECT id, name, role, active FROM users WHERE id = ?').get(Number(assignee_id));
+      if (!assignee || assignee.active !== 1) {
+        throw httpError(400, '任务接收人不存在或已停用');
+      }
+      if (assignee.id === publisher.id) {
+        throw httpError(400, '不能将任务派发给自己');
+      }
+      if (!canReceiveTask(publisher.role, assignee.role)) {
+        const roleChangedDuringRequest = publisher.role !== req.user.role;
+        throw httpError(
+          roleChangedDuringRequest ? 409 : 400,
+          roleChangedDuringRequest ? '发布者权限已变化，请刷新后重试' : '所选用户不能接收此任务'
+        );
+      }
+
       const info = db
         .prepare(
           `INSERT INTO tasks (title, description, category, priority, status, creator_id, assignee_id, due_at, created_at)
@@ -391,32 +445,38 @@ router.post('/', requireRole('admin', 'assigner'), limitTaskCreate, upload.array
           String(description || '').trim(),
           String(category || '常规任务').trim() || '常规任务',
           pr,
-          req.user.id,
+          publisher.id,
           assignee.id,
           normalizedDueAt.value,
           nowISO()
         );
 
       const id = Number(info.lastInsertRowid);
-      const n = saveAttachments(id, req.files, req.user.id, 'task');
-      log(id, req.user.id, 'create', `任务已派发给 ${assignee.name}${n ? `，附件 ${n} 个` : ''}`);
+      const n = saveAttachments(id, req.files, publisher.id, 'task');
+      log(id, publisher.id, 'create', `任务已派发给 ${assignee.name}${n ? `，附件 ${n} 个` : ''}`);
       return id;
     });
   } catch (error) {
+    if (error && error.status >= 400 && error.status < 500) {
+      return rejectUploadedRequest(req, res, next, error.status, error.message);
+    }
     return forwardAfterUploadFailure(req, next, error);
   }
 
   res.status(201).json({ id: taskId });
 });
 
-/* ---------------- 执行者提交完成申请 ---------------- */
+/* ---------------- 任务接收人提交完成申请 ---------------- */
 
 function authorizeCompletionRequest(req, res, next) {
   const id = Number(req.params.id);
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!task) return res.status(404).json({ error: '任务不存在' });
-  if (task.assignee_id !== req.user.id || req.user.role !== 'executor') {
-    return res.status(403).json({ error: '只有任务执行人可以提交完成申请' });
+  if (!isTaskRecipient(req.user, task)) {
+    return res.status(403).json({ error: '只有任务接收人可以提交完成申请' });
+  }
+  if (task.creator_id === task.assignee_id) {
+    return res.status(409).json({ error: '创建者不能作为同一任务的接收人，请先重新指派' });
   }
   if (task.status === 'completed') {
     return res.status(400).json({ error: '该任务已经完成' });
@@ -444,32 +504,55 @@ router.post('/:id/completion-request', requireLogin, authorizeCompletionRequest,
   let attachmentCount;
   try {
     attachmentCount = runInTransaction(() => {
-      const count = saveAttachments(id, req.files, req.user.id, 'result');
-      const update = db.prepare(
-        "UPDATE tasks SET completion_requested_at = ?, completion_request_note = ? WHERE id = ? AND status = 'in_progress' AND completion_requested_at IS NULL"
-      ).run(requestedAt, note, id);
-      if (update.changes !== 1) {
-        const conflict = new Error('该任务状态已变化，请刷新后重试');
-        conflict.status = 409;
-        throw conflict;
+      // 上传可能持续较久；最终写入前重新读取账号和任务，防止上传期间的停用、改角色、
+      // 改派、退回或自指派旧数据继续沿用授权阶段的快照。
+      const currentUser = db.prepare('SELECT id, role, active FROM users WHERE id = ?').get(req.user.id);
+      const currentTask = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+      if (!currentUser || currentUser.active !== 1) {
+        throw httpError(409, '账号状态已变化，请重新登录后重试');
       }
-      log(id, req.user.id, 'complete_request', `提交完成申请${count ? `，成果附件 ${count} 个` : ''}`);
+      if (!currentTask) {
+        throw httpError(409, '任务已不存在，请刷新后重试');
+      }
+      if (!isTaskRecipient(currentUser, currentTask)) {
+        throw httpError(409, '任务接收人已变化，请刷新后重试');
+      }
+      if (currentTask.creator_id === currentTask.assignee_id) {
+        throw httpError(409, '创建者不能作为同一任务的接收人，请先重新指派');
+      }
+      if (currentTask.status !== 'in_progress' || currentTask.returned_at || currentTask.completion_requested_at) {
+        throw httpError(409, '该任务状态已变化，请刷新后重试');
+      }
+
+      const count = saveAttachments(id, req.files, currentUser.id, 'result');
+      const update = db.prepare(
+        "UPDATE tasks SET completion_requested_at = ?, completion_request_note = ? " +
+        "WHERE id = ? AND status = 'in_progress' AND completion_requested_at IS NULL " +
+        "AND returned_at IS NULL AND assignee_id = ? AND creator_id <> assignee_id"
+      ).run(requestedAt, note, id, currentUser.id);
+      if (update.changes !== 1) {
+        throw httpError(409, '该任务状态已变化，请刷新后重试');
+      }
+      log(id, currentUser.id, 'complete_request', `提交完成申请${count ? `，成果附件 ${count} 个` : ''}`);
       return count;
     });
   } catch (error) {
+    if (error && error.status >= 400 && error.status < 500) {
+      return rejectUploadedRequest(req, res, next, error.status, error.message);
+    }
     return forwardAfterUploadFailure(req, next, error);
   }
 
   res.json({ ok: true, attachment_count: attachmentCount, requested_at: requestedAt });
 });
 
-/* ---------------- 执行者退回任务 ---------------- */
+/* ---------------- 任务接收人退回任务 ---------------- */
 
 router.post('/:id/return', requireLogin, (req, res, next) => {
   const id = Number(req.params.id);
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!task) return res.status(404).json({ error: '任务不存在' });
-  if (req.user.role !== 'executor' || task.assignee_id !== req.user.id) {
+  if (!isTaskRecipient(req.user, task)) {
     return res.status(403).json({ error: '只有任务接收者可以退回任务' });
   }
   if (task.status === 'completed') return res.status(400).json({ error: '已完成任务不能退回' });
@@ -508,42 +591,61 @@ router.post('/:id/return', requireLogin, (req, res, next) => {
 
 function updateTaskComplete(task, user) {
   if (task.status === 'completed') return { status: 400, body: { error: '该任务已完成' } };
-  if (!task.completion_requested_at) return { status: 400, body: { error: '执行人尚未提交完成申请' } };
-  const ts = nowISO();
-  // 乐观锁：WHERE 条件要求 status 仍为 in_progress 且 completion_requested_at 仍存在，
-  // 防止两个并发请求都通过前置校验后都执行 UPDATE，重复写 complete_confirm 日志或丢失 result_note。
-  const update = db.prepare(
-    "UPDATE tasks SET status='completed', completed_at=?, result_note=?, returned_at=NULL, return_reason='' " +
-    "WHERE id=? AND status='in_progress' AND completion_requested_at IS NOT NULL"
-  ).run(ts, String(task.completion_request_note || '').trim(), task.id);
-  if (update.changes !== 1) {
-    return { status: 409, body: { error: '任务状态已变化，请刷新后重试' } };
+  if (task.creator_id === task.assignee_id) {
+    return { status: 409, body: { error: '创建者不能确认自己接收的任务，请先重新指派' } };
   }
-  const ms = new Date(ts).getTime() - new Date(task.created_at).getTime();
-  log(task.id, user.id, 'complete_confirm', `发布者确认完成，耗时 ${humanDuration(ms)}`);
-  return { status: 200, body: { ok: true, duration_text: humanDuration(ms) } };
+  if (!task.completion_requested_at) return { status: 400, body: { error: '任务接收人尚未提交完成申请' } };
+  const ts = nowISO();
+  return runInTransaction(() => {
+    // 乐观锁：WHERE 条件要求 status 仍为 in_progress 且 completion_requested_at 仍存在，
+    // 防止两个并发请求都通过前置校验后都执行 UPDATE，重复写 complete_confirm 日志或丢失 result_note。
+    const update = db.prepare(
+      "UPDATE tasks SET status='completed', completed_at=?, result_note=?, returned_at=NULL, return_reason='' " +
+      "WHERE id=? AND status='in_progress' AND completion_requested_at IS NOT NULL"
+    ).run(ts, String(task.completion_request_note || '').trim(), task.id);
+    if (update.changes !== 1) {
+      return { status: 409, body: { error: '任务状态已变化，请刷新后重试' } };
+    }
+    const ms = new Date(ts).getTime() - new Date(task.created_at).getTime();
+    log(task.id, user.id, 'complete_confirm', `发布者确认完成，耗时 ${humanDuration(ms)}`);
+    return { status: 200, body: { ok: true, duration_text: humanDuration(ms) } };
+  });
 }
 
 function updateTaskReopen(task, user) {
   if (task.returned_at) return { status: 400, body: { error: '请编辑任务后重新派发' } };
   if (task.status === 'in_progress') return { status: 400, body: { error: '该任务已经在执行中' } };
-  // 乐观锁：仅允许将 completed 状态重新开启；并发 reopen 双写日志由 changes 守护
-  const update = db.prepare(
-    "UPDATE tasks SET status='in_progress', completed_at=NULL, result_note='', completion_requested_at=NULL, completion_request_note='', returned_at=NULL, return_reason='' " +
-    "WHERE id=? AND status='completed'"
-  ).run(task.id);
-  if (update.changes !== 1) {
-    return { status: 409, body: { error: '任务状态已变化，请刷新后重试' } };
-  }
-  log(task.id, user.id, 'reopen', '任务被重新开启');
-  return { status: 200, body: { ok: true } };
+  return runInTransaction(() => {
+    // 乐观锁：仅允许将 completed 状态重新开启；并发 reopen 双写日志由 changes 守护
+    const update = db.prepare(
+      "UPDATE tasks SET status='in_progress', completed_at=NULL, result_note='', completion_requested_at=NULL, completion_request_note='', returned_at=NULL, return_reason='' " +
+      "WHERE id=? AND status='completed'"
+    ).run(task.id);
+    if (update.changes !== 1) {
+      return { status: 409, body: { error: '任务状态已变化，请刷新后重试' } };
+    }
+    log(task.id, user.id, 'reopen', '任务被重新开启');
+    return { status: 200, body: { ok: true } };
+  });
 }
-
 function updateTaskDetail(task, user, body) {
-  if (task.completion_requested_at) return { status: 409, body: { error: '任务正在等待完成确认，确认后再修改' } };
-
   const { title, description, category, priority, assignee_id, due_at } = body || {};
+  const repairingSelfAssignment = Boolean(
+    task.completion_requested_at &&
+    task.creator_id === task.assignee_id &&
+    assignee_id !== undefined &&
+    Number(assignee_id) !== task.assignee_id
+  );
+  if (task.completion_requested_at && !repairingSelfAssignment) {
+    return { status: 409, body: { error: '任务正在等待完成确认，确认后再修改' } };
+  }
   const redispatching = Boolean(task.returned_at);
+  // 管理员代为维护时沿用任务创建者的接收人范围，避免把执行者发布给分配者的任务改坏。
+  const creator = task.creator_id === user.id
+    ? user
+    : db.prepare('SELECT role FROM users WHERE id = ?').get(task.creator_id);
+  const publisherRole = creator ? creator.role : user.role;
+
 
   // 长度校验：PATCH 语义下仅当字段存在（!== undefined）时才校验
   if (title !== undefined && String(title).length > TASK_TITLE_MAX_LEN) {
@@ -576,31 +678,55 @@ function updateTaskDetail(task, user, body) {
   }
   if (assignee_id !== undefined && Number(assignee_id) !== task.assignee_id) {
     const assignee = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(assignee_id));
-    if (!assignee || assignee.role !== 'executor' || assignee.active !== 1) {
-      return { status: 400, body: { error: '执行人不合法' } };
+    if (assignee && assignee.id === task.creator_id) {
+      return { status: 400, body: { error: '不能将任务派发给创建者本人' } };
+    }
+    if (!assignee || !canReceiveTask(publisherRole, assignee.role) || assignee.active !== 1) {
+      return { status: 400, body: { error: '任务接收人不合法' } };
     }
     sets.push('assignee_id = ?'); args.push(assignee.id);
-    changes.push(`执行人改为 ${assignee.name}`);
+    changes.push(`任务接收人改为 ${assignee.name}`);
   } else if (redispatching) {
-    // 重新派发意味着重新进入执行：即使执行人未变化，也必须仍是启用中的执行者。
+    // 重新派发意味着重新进入执行：即使接收人未变化，也必须仍是启用中的合法接收角色。
     // 只校验变化时的 assignee 会留下缺口——退回任务可通过 API 保持原 assignee_id
     // 不变绕过前端重选校验，继续挂在已停用账号上，服务端需兜底。
     const current = db.prepare('SELECT role, active FROM users WHERE id = ?').get(task.assignee_id);
-    if (!current || current.role !== 'executor' || current.active !== 1) {
-      return { status: 400, body: { error: '当前执行人已停用，重新派发请改选启用中的执行人' } };
+    if (task.assignee_id === task.creator_id) {
+      return { status: 400, body: { error: '不能将任务重新派发给创建者本人' } };
+    }
+    // 接收人未变化时保留既有合法关系，避免创建者角色变更后让退回任务永久卡死；
+    // 若改选其他人，仍由上方 canReceiveTask 按创建者当前角色收紧范围。
+    if (!current || !isTaskRecipientRole(current.role) || current.active !== 1) {
+      return { status: 400, body: { error: '当前任务接收人不可用，重新派发请改选启用中的任务接收人' } };
     }
   }
 
+  if (repairingSelfAssignment) {
+    sets.push('completion_requested_at = NULL', "completion_request_note = ''");
+    changes.push('撤销不合法的完成申请');
+  }
   if (!sets.length) return { status: 400, body: { error: '没有需要修改的内容' } };
   if (redispatching) {
     sets.push("status = 'in_progress'", 'completed_at = NULL', "result_note = ''", 'completion_requested_at = NULL', "completion_request_note = ''", 'returned_at = NULL', "return_reason = ''");
   }
-  args.push(task.id);
-  db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...args);
-  log(task.id, user.id, redispatching ? 'redispatch_edit' : 'update', redispatching
-    ? `重新编辑并派发任务，修改了：${changes.join('、')}`
-    : `修改了：${changes.join('、')}`);
-  return { status: 200, body: { ok: true, redispatched: redispatching } };
+  args.push(task.id, task.status, task.assignee_id);
+  return runInTransaction(() => {
+    const completionPredicate = repairingSelfAssignment
+      ? 'completion_requested_at IS NOT NULL'
+      : 'completion_requested_at IS NULL';
+    const returnedPredicate = redispatching ? 'returned_at IS NOT NULL' : 'returned_at IS NULL';
+    const update = db.prepare(
+      `UPDATE tasks SET ${sets.join(', ')} WHERE id = ? AND status = ? AND assignee_id = ? ` +
+      `AND ${completionPredicate} AND ${returnedPredicate}`
+    ).run(...args);
+    if (update.changes !== 1) {
+      return { status: 409, body: { error: '任务状态已变化，请刷新后重试' } };
+    }
+    log(task.id, user.id, redispatching ? 'redispatch_edit' : 'update', redispatching
+      ? `重新编辑并派发任务，修改了：${changes.join('、')}`
+      : `修改了：${changes.join('、')}`);
+    return { status: 200, body: { ok: true, redispatched: redispatching || repairingSelfAssignment } };
+  });
 }
 
 router.patch('/:id', requireLogin, (req, res) => {
@@ -644,7 +770,7 @@ function authorizeAttachmentUpload(req, res, next) {
   const u = req.user;
   const allowed = u.role === 'admin' || task.creator_id === u.id;
   if (!allowed) {
-    const message = task.assignee_id === u.id && u.role === 'executor'
+    const message = isTaskRecipient(u, task)
       ? '请在标记完成时上传成果附件'
       : '无权上传附件';
     return res.status(403).json({ error: message });

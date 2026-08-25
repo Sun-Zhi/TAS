@@ -156,6 +156,12 @@ async function stopServer() {
   ok(responsibilityCheck.data.users.some((user) => user.id === newUserId && user.responsibilities === '负责前端功能开发和联调验收'),
     '岗位职责可被正确读取');
 
+  const allUsers = (await req('/api/users', { token: admin })).data.users;
+  const adminUser = allUsers.find((user) => user.username === 'admin');
+  const pmUser = allUsers.find((user) => user.username === 'pm01');
+  const devUser = allUsers.find((user) => user.username === 'dev01');
+  ok(adminUser && pmUser && devUser, '测试所需的管理员、分配者和执行者账号存在');
+
   console.log('\n【3】创建任务 + 中文附件上传');
   const fd = new FormData();
   fd.append('title', '首页改版需求评审');
@@ -180,17 +186,86 @@ async function stopServer() {
 
   const noAssignee = await req('/api/tasks', { method: 'POST', token: pm, body: { title: '缺执行人' } });
   ok(noAssignee.status === 400, '未指定执行人被拒绝');
-  const devCreate = await req('/api/tasks', { method: 'POST', token: dev, body: { title: 'x', assignee_id: 4 } });
-  ok(devCreate.status === 403, '执行者无权创建任务');
+  const executorAssignees = await req('/api/users/task-assignees', { token: dev });
+  ok(executorAssignees.status === 200 &&
+    executorAssignees.data.users.some((user) => user.role === 'executor') &&
+    executorAssignees.data.users.some((user) => user.role === 'assigner') &&
+    executorAssignees.data.users.every((user) => user.role !== 'admin') &&
+    executorAssignees.data.users.every((user) => user.id !== devUser.id),
+    '执行者发布时可选择其他执行者或分配者，但不能选择管理员和自己');
+  ok(executorAssignees.data.users.every((user) => user.username === undefined),
+    '任务接收人候选接口不返回登录账号');
+  const selfCreate = await req('/api/tasks', {
+    method: 'POST', token: dev, body: { title: '禁止自派任务', assignee_id: devUser.id },
+  });
+  ok(selfCreate.status === 400, '执行者不能把任务派发给自己');
+  const assignerAssignees = await req('/api/users/task-assignees', { token: pm });
+  ok(assignerAssignees.status === 200 && assignerAssignees.data.users.every((user) => user.role === 'executor'),
+    '原分配者的任务接收人范围仍只有执行者');
+
+  const devCreate = await req('/api/tasks', {
+    method: 'POST', token: dev, body: { title: '执行者派发给执行者', assignee_id: newUserId },
+  });
+  ok(devCreate.status === 201, '执行者可向执行者发布任务', JSON.stringify(devCreate.data));
+  const executorToExecutorTaskId = devCreate.data.id;
+  const reassignSelf = await req(`/api/tasks/${executorToExecutorTaskId}`, {
+    method: 'PATCH', token: dev, body: { assignee_id: devUser.id },
+  });
+  ok(reassignSelf.status === 400, '执行者不能把已创建任务改派给自己');
+  const adminReassignToCreator = await req(`/api/tasks/${executorToExecutorTaskId}`, {
+    method: 'PATCH', token: admin, body: { assignee_id: devUser.id },
+  });
+  ok(adminReassignToCreator.status === 400, '管理员代维护时也不能把任务改派给创建者本人');
+  const devToAssigner = await req('/api/tasks', {
+    method: 'POST', token: dev, body: { title: '执行者派发给分配者', assignee_id: pmUser.id },
+  });
+  ok(devToAssigner.status === 201, '执行者可向分配者发布任务', JSON.stringify(devToAssigner.data));
+  const executorToAssignerTaskId = devToAssigner.data.id;
+  const assignerToAssigner = await req('/api/tasks', {
+    method: 'POST', token: pm, body: { title: '分配者越权派发', assignee_id: pmUser.id },
+  });
+  ok(assignerToAssigner.status === 400, '原分配者仍不能向分配者发布任务');
+  const adminToAssigner = await req('/api/tasks', {
+    method: 'POST', token: admin, body: { title: '管理员越权派发', assignee_id: pmUser.id },
+  });
+  ok(adminToAssigner.status === 400, '管理员原有的接收人范围仍只有执行者');
+  const executorToAdmin = await req('/api/tasks', {
+    method: 'POST', token: dev, body: { title: '执行者越权派发', assignee_id: adminUser.id },
+  });
+  ok(executorToAdmin.status === 400, '执行者不能向管理员发布任务');
+
+  const assignerCompletionForm = new FormData();
+  assignerCompletionForm.append('result_note', '分配者作为任务接收人完成任务');
+  const assignerCompletion = await req(`/api/tasks/${executorToAssignerTaskId}/completion-request`, {
+    method: 'POST', token: pm, body: assignerCompletionForm,
+  });
+  ok(assignerCompletion.status === 200, '分配者作为接收人可提交完成申请');
+  const creatorOverviewWaiting = await req('/api/overview', { token: dev });
+  ok(creatorOverviewWaiting.data.pending_confirmation_to_confirm === 1, '执行者发布者收到待确认完成通知');
+  const recipientOverviewWaiting = await req('/api/overview', { token: pm });
+  ok(recipientOverviewWaiting.data.pending_confirmation_to_confirm === 0, '任务接收人不会收到误导性的确认通知');
+  const executorConfirmAssigner = await req(`/api/tasks/${executorToAssignerTaskId}`, {
+    method: 'PATCH', token: dev, body: { status: 'completed' },
+  });
+  ok(executorConfirmAssigner.status === 200, '执行者发布者可确认分配者完成的任务');
 
   console.log('\n【4】数据可见范围');
   const newUserToken = await login(uname, DEMO_PASSWORD);
   const seeAdmin = await req('/api/tasks', { token: admin });
   const seePm = await req('/api/tasks', { token: pm });
   const seeExec = await req('/api/tasks', { token: newUserToken });
+  const seeDev = await req('/api/tasks', { token: dev });
   ok(seeAdmin.data.tasks.length >= seePm.data.tasks.length, '管理员可见任务数 >= 分配者');
-  ok(seePm.data.tasks.every((t) => t.creator_username === 'pm01'), '分配者只看到自己创建的任务');
-  ok(seeExec.data.tasks.every((t) => t.assignee_id === newUserId), '执行者只看到派发给自己的任务');
+  ok(seePm.data.tasks.every((task) => task.creator_id === pmUser.id || task.assignee_id === pmUser.id),
+    '分配者只能看到自己发布或承接的任务');
+  ok(seePm.data.tasks.some((task) => task.id === executorToAssignerTaskId), '分配者可看到执行者派发给自己的任务');
+  ok(seeExec.data.tasks.every((task) => task.creator_id === newUserId || task.assignee_id === newUserId),
+    '执行者只能看到自己发布或承接的任务');
+  ok(seeDev.data.tasks.every((task) => task.creator_id === devUser.id || task.assignee_id === devUser.id),
+    '发布任务的执行者没有扩大到其他人的任务');
+  ok(seeDev.data.tasks.some((task) => task.id === executorToExecutorTaskId) &&
+    seeDev.data.tasks.some((task) => task.id === executorToAssignerTaskId),
+    '执行者可持续查看自己向两类角色发布的任务');
   const otherView = await req('/api/tasks/' + taskId, { token: dev });
   ok(otherView.status === 404, '无关执行者查看他人任务详情返回 404（与不存在一致）');
 
@@ -311,13 +386,28 @@ async function stopServer() {
   ok(scr.status === 200, '大屏接口可访问');
   ok(typeof scr.data.summary.total === 'number' && scr.data.summary.total > 0, `大屏统计正常（共 ${scr.data.summary.total} 个任务）`);
   ok(Array.isArray(scr.data.running) && Array.isArray(scr.data.done), '大屏返回执行中/已完成两个列表');
-  ok(scr.data.executors.length > 0 && scr.data.executors.every((executor) => executor.total > 0),
-    '执行者分布只显示有任务的人员');
-  ok(scr.data.executors.every((executor) => executor.name !== '系统管理员' && executor.name !== '张明（产品）'),
-    '执行者分布不显示管理员和发布者');
+  const screenCreatorRoles = new Set([...scr.data.running, ...scr.data.done].map((task) => task.creator_role));
+  ok(screenCreatorRoles.has('executor') && screenCreatorRoles.has('assigner'),
+    '大屏执行中和已完成明细包含不同发布角色创建的任务');
+  ok(scr.data.recipients.length > 0 && scr.data.recipients.every((recipient) => recipient.total > 0),
+    '所有角色任务分布只显示实际承担过任务的人员');
+  ok(scr.data.recipients.some((recipient) => recipient.role === 'assigner'),
+    '所有角色任务分布包含作为任务接收人的分配者');
+  ok(scr.data.executors.length === scr.data.recipients.length,
+    '旧 executors 字段与新 recipients 字段保持兼容');
   const executorScreen = await req('/api/screen', { token: dev });
-  ok(executorScreen.data.executors.length === 0,
-    '无任务的执行者大屏不显示空分布记录');
+  ok(JSON.stringify(executorScreen.data.running.map((task) => task.id)) ===
+    JSON.stringify(scr.data.running.map((task) => task.id)) &&
+    JSON.stringify(executorScreen.data.done.map((task) => task.id)) ===
+    JSON.stringify(scr.data.done.map((task) => task.id)),
+  '执行者登录大屏也能看到全局执行中和已完成任务');
+  ok(JSON.stringify(executorScreen.data.recipients) === JSON.stringify(scr.data.recipients),
+    '执行者登录大屏看到相同的所有角色任务分布');
+  const assignerScreen = await req('/api/screen', { token: pm });
+  ok(JSON.stringify(assignerScreen.data.recipients) === JSON.stringify(scr.data.recipients),
+    '分配者登录大屏看到相同的所有角色任务分布');
+  const anonymousScreen = await req('/api/screen');
+  ok(anonymousScreen.status === 401, '大屏全局数据仍要求登录后访问');
   ok(scr.data.trend.length === 7, '近 7 日趋势数据完整');
   // 断言与 humanDuration 输出格式一致（如「0分」「1小时5分」「2天3小时15分」），
   // 而非仅 != '-'，确保平均耗时计算真实产出可读时长
@@ -332,8 +422,38 @@ async function stopServer() {
   ok(rawBytes[0] === 0xef && rawBytes[1] === 0xbb && rawBytes[2] === 0xbf, 'CSV 含 UTF-8 BOM（Excel 中文不乱码）');
   ok(exp.text.includes('首页改版需求评审') && exp.text.includes('需求开发'), 'CSV 含任务标题与类别');
   ok(exp.text.split('\r\n').length >= 2, `CSV 数据行数：${exp.text.split('\r\n').length - 1}`);
-  const expExec = await req(`/api/export?assignee_id=1`, { token: newUserToken, raw: true });
-  ok(expExec.status === 403, '执行者无法导出他人任务');
+  const expDev = await req('/api/export', { token: dev, raw: true });
+  ok(expDev.status === 200 &&
+    expDev.text.includes('执行者派发给执行者') &&
+    expDev.text.includes('执行者派发给分配者'),
+  '执行者可导出自己发布或承接的任务');
+  const expDevToAssigner = await req(`/api/export?assignee_id=${pmUser.id}`, { token: dev, raw: true });
+  ok(expDevToAssigner.status === 200 && expDevToAssigner.text.includes('执行者派发给分配者'),
+    '执行者按其他接收人筛选时仍只能导出自己可见的已发布任务');
+  const visibleExportResponse = await fetch(`${BASE}/api/export?assignee_id=${pmUser.id}`, {
+    headers: { 'x-auth-token': dev },
+  });
+  const visibleExportDisposition = decodeURIComponent(
+    visibleExportResponse.headers.get('content-disposition') || ''
+  );
+  await visibleExportResponse.arrayBuffer();
+  ok(visibleExportDisposition.includes(pmUser.name), '导出可见任务时文件名保留接收人姓名');
+  const hiddenExportResponse = await fetch(`${BASE}/api/export?assignee_id=${adminUser.id}`, {
+    headers: { 'x-auth-token': dev },
+  });
+  const hiddenExportDisposition = decodeURIComponent(
+    hiddenExportResponse.headers.get('content-disposition') || ''
+  );
+  await hiddenExportResponse.arrayBuffer();
+  ok(hiddenExportResponse.status === 200 &&
+    !hiddenExportDisposition.includes(adminUser.name) &&
+    hiddenExportDisposition.includes('所选接收人'),
+  '任意用户 ID 不能通过导出文件名泄露不可见用户姓名');
+  const expPm = await req('/api/export', { token: pm, raw: true });
+  ok(expPm.status === 200 &&
+    expPm.text.includes('首页改版需求评审') &&
+    expPm.text.includes('执行者派发给分配者'),
+  '分配者导出同时包含自己发布和承接的任务');
 
   console.log('\n【8】清理校验');
   const delUser = await req('/api/users/' + newUserId, { method: 'DELETE', token: admin });
