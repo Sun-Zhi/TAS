@@ -24,3 +24,6 @@ uploads/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+#提示词
+prompts/
