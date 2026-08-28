@@ -10,7 +10,7 @@ async function loadUsers() {
     <td><span class="badge ${u.role === 'admin' ? 'overdue' : u.role === 'assigner' ? 'running' : 'gray'}">${ROLE_TEXT[u.role]}</span></td>
     <td>${esc(u.dept || '-')}</td>
     <td>${u.active ? '<span style="color:var(--success)">启用</span>' : '<span style="color:var(--text-mute)">停用</span>'}</td>
-    <td>${u.role === 'executor' ? `承接 ${u.assigned_count} / 完成 ${u.done_count}` : `创建 ${u.created_count}`}</td>
+    <td>创建 ${u.created_count} / 承接 ${u.assigned_count} / 完成 ${u.done_count}</td>
     <td>${fmt(u.created_at, false)}</td>
     <td style="white-space:nowrap">
       <button class="btn ghost sm" data-action="edit-user" data-id="${u.id}">编辑</button>
