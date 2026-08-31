@@ -93,7 +93,7 @@ async function load() {
         <div class="mt">发布者 ${esc(t.creator_name)}　·　接收人 ${esc(t.assignee_name)}（${esc(ROLE[t.assignee_role] || t.assignee_role)}）　·　派发 ${fmt(t.created_at)}　·　${PRI[t.priority]}优先级</div>
       </div>
       <div class="rt"><div class="big ${t.overdue ? 'tone-late' : 'tone-run'}">${elapsed(t.created_at)}</div>
-        <div style="color:#7d93b8;font-size:11px">已进行</div></div>
+        <div style="color:var(--text-sub);font-size:11px">已进行</div></div>
     </div>`).join('') : '<div class="blank">当前没有执行中的任务</div>';
 
   /* 已完成 */
@@ -106,7 +106,7 @@ async function load() {
         <div class="mt">发布者 ${esc(t.creator_name)}　·　接收人 ${esc(t.assignee_name)}（${esc(ROLE[t.assignee_role] || t.assignee_role)}）　·　完成 ${fmt(t.completed_at)}</div>
       </div>
       <div class="rt"><div class="big tone-done">${esc(t.duration_text)}</div>
-        <div style="color:#7d93b8;font-size:11px">执行耗时</div></div>
+        <div style="color:var(--text-sub);font-size:11px">执行耗时</div></div>
     </div>`).join('') : '<div class="blank">暂无已完成任务</div>';
 
   /* 所有角色任务接收分布 */

@@ -27,3 +27,7 @@ Desktop.ini
 
 #提示词
 prompts/
+
+# 评审报告（本地产物，不入库）
+codereview/
+securityreview/

@@ -1,3 +1,6 @@
+# NOTE: keep this file pure ASCII. Windows PowerShell 5.1 reads .ps1 using the system
+# ANSI code page, so non-ASCII text without a UTF-8 BOM breaks the parser.
+
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -19,6 +22,8 @@ if (-not $isAdmin) {
     -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath))
   exit 0
 }
+
+. (Join-Path $PSScriptRoot 'taskassign-task-config.ps1')
 
 try {
   New-Item -ItemType Directory -Path $appRoot -Force | Out-Null
@@ -73,14 +78,20 @@ try {
     throw "Startup task registration failed; schtasks exit code: $LASTEXITCODE"
   }
 
+  # schtasks.exe cannot express the settings this service needs, and its defaults are
+  # actively harmful here: it applies ExecutionTimeLimit=3 days, which terminated the
+  # service after 72 hours on 2026-08-31, and it leaves ONSTART as the only trigger so
+  # nothing restarted it. Apply the shared schedule immediately after creation so a
+  # re-install can never reintroduce that.
+  $task = Set-TaskAssignSchedule -TaskName $taskName
+
   Remove-ItemProperty `
     -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
     -Name 'TaskAssign LAN Server' `
     -ErrorAction SilentlyContinue
 
-  $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
-  $message = '{0} Installed protected task "{1}"; trigger=AtStartup; runAs={2}; state={3}' -f `
-    (Get-Date -Format o), $taskName, $task.Principal.UserId, $task.State
+  $message = '{0} Installed protected task "{1}"; {2}' -f `
+    (Get-Date -Format o), $taskName, (Format-TaskAssignSchedule $task)
   Set-Content -LiteralPath $installLog -Value $message -Encoding UTF8
   Set-Content -LiteralPath $workspaceLog -Value $message -Encoding UTF8
   Write-Host $message

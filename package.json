@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "reset": "node scripts/reset.js",
-    "test": "node scripts/auth-regression.js && node scripts/utils-regression.js && node scripts/reset-regression.js && node scripts/task-security-regression.js && node scripts/e2e-test.js"
+    "test": "node scripts/auth-regression.js && node scripts/utils-regression.js && node scripts/theme-regression.js && node scripts/reset-regression.js && node scripts/task-security-regression.js && node scripts/e2e-test.js"
   },
   "engines": {
     "node": ">=22.5.0"

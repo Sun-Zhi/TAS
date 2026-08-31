@@ -171,11 +171,11 @@ function taskStatusBadge(t, withDot = true) {
 
 function renderTaskRow(t) {
   const timeCell = t.status === 'completed'
-    ? `<b style="color:var(--success)">${esc(t.duration_text)}</b><div class="cell-sub">${fmt(t.completed_at)} 完成</div>`
+    ? `<b style="color:var(--success-fg)">${esc(t.duration_text)}</b><div class="cell-sub">${fmt(t.completed_at)} 完成</div>`
     : t.returned
-      ? `<b style="color:#fbbf24">任务已退回</b><div class="cell-sub">${fmt(t.returned_at)}</div>`
+      ? `<b style="color:var(--amber-fg)">任务已退回</b><div class="cell-sub">${fmt(t.returned_at)}</div>`
       : t.awaiting_confirmation
-      ? `<b style="color:#c4b5fd">已提交完成申请</b><div class="cell-sub">${fmt(t.completion_requested_at)}</div>`
+      ? `<b style="color:var(--purple-fg)">已提交完成申请</b><div class="cell-sub">${fmt(t.completion_requested_at)}</div>`
       : `<span style="color:var(--warn)">已进行 ${elapsed(t.created_at)}</span>${t.due_at ? `<div class="cell-sub">要求 ${fmt(t.due_at)}</div>` : ''}`;
 
   const canRequestDone = t.status === 'in_progress' && !t.returned && !t.awaiting_confirmation &&
@@ -344,13 +344,13 @@ function detailBodyHtml(t, attHtml, logs, canUpload) {
     <div class="detail-row"><div class="lb">要求完成</div><div class="vl">${fmt(t.due_at)}</div></div>
     ${t.status === 'completed' ? `
       <div class="detail-row"><div class="lb">完成时间</div><div class="vl">${fmt(t.completed_at)}</div></div>
-      <div class="detail-row"><div class="lb">执行耗时</div><div class="vl"><b style="color:var(--success);font-size:15px">${esc(t.duration_text)}</b></div></div>
+      <div class="detail-row"><div class="lb">执行耗时</div><div class="vl"><b style="color:var(--success-fg);font-size:15px">${esc(t.duration_text)}</b></div></div>
       ${t.result_note ? `<div class="detail-row"><div class="lb">完成说明</div><div class="vl">${esc(t.result_note)}</div></div>` : ''}
     ` : t.returned ? `
-      <div class="detail-row"><div class="lb">退回时间</div><div class="vl"><b style="color:#fbbf24">${fmt(t.returned_at)}</b></div></div>
-      <div class="detail-row"><div class="lb">退回理由</div><div class="vl" style="white-space:pre-wrap;color:#fcd34d">${esc(t.return_reason)}</div></div>
+      <div class="detail-row"><div class="lb">退回时间</div><div class="vl"><b style="color:var(--amber-fg)">${fmt(t.returned_at)}</b></div></div>
+      <div class="detail-row"><div class="lb">退回理由</div><div class="vl" style="white-space:pre-wrap;color:var(--amber-fg)">${esc(t.return_reason)}</div></div>
     ` : t.awaiting_confirmation ? `
-      <div class="detail-row"><div class="lb">完成申请</div><div class="vl"><b style="color:#c4b5fd">${fmt(t.completion_requested_at)} 已提交</b></div></div>
+      <div class="detail-row"><div class="lb">完成申请</div><div class="vl"><b style="color:var(--purple-fg)">${fmt(t.completion_requested_at)} 已提交</b></div></div>
       <div class="detail-row"><div class="lb">完成说明</div><div class="vl" style="white-space:pre-wrap">${esc(t.completion_request_note) || '<span class="hint">未填写</span>'}</div></div>
     ` : `<div class="detail-row"><div class="lb">已进行</div><div class="vl" style="color:var(--warn)">${elapsed(t.created_at)}</div></div>`}
     <div class="detail-row"><div class="lb">任务描述</div><div class="vl" style="white-space:pre-wrap">${esc(t.description) || '<span class="hint">无</span>'}</div></div>

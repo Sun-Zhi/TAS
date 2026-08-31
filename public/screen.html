@@ -4,140 +4,139 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>任务执行监控大屏</title>
+<script src="/js/theme.js?v=20260828-1"></script>
+<link rel="stylesheet" href="/css/style.css?v=20260828-1">
 <style>
-:root{
-  --bg:#060c1c; --panel:rgba(16,30,60,.62); --line:rgba(64,140,255,.22);
-  --cyan:#31e2f2; --blue:#3d8bff; --green:#22e08a; --orange:#ffab2e; --red:#ff5c72;
-  --txt:#e8f1ff; --sub:#7d93b8;
-}
+/* 局部样式：保留大屏紧凑布局；颜色全部引用 style.css 的共享主题令牌，
+   与工作台/登录页一起随四套主题切换。 */
 *{box-sizing:border-box;}
 html,body{margin:0;height:100%;}
 body{
-  background:
-    radial-gradient(1200px 600px at 12% -10%, rgba(49,226,242,.13), transparent 60%),
-    radial-gradient(1000px 620px at 88% 0%, rgba(61,139,255,.16), transparent 60%),
-    var(--bg);
-  color:var(--txt);
+  background:var(--body-background);
+  color:var(--text);
   font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+  /* 大屏是固定视口看板：显式钉回 UA 默认排版（16px/normal），
+   * 避免被工作台 style.css 的 body 14px/1.6 接管而压缩每屏可见条目数 */
+  font-size:16px;line-height:normal;
   overflow:hidden;
 }
 body::before{
   content:"";position:fixed;inset:0;pointer-events:none;
-  background-image:linear-gradient(rgba(70,150,255,.045) 1px,transparent 1px),
-                   linear-gradient(90deg,rgba(70,150,255,.045) 1px,transparent 1px);
+  background-image:linear-gradient(var(--grid-line) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--grid-line) 1px,transparent 1px);
   background-size:46px 46px;
 }
 .screen{position:relative;height:100vh;display:flex;flex-direction:column;padding:14px 20px 18px;}
 
 /* 头部 */
-.hd{display:flex;align-items:center;gap:18px;padding-bottom:12px;border-bottom:1px solid var(--line);}
+.hd{display:flex;align-items:center;gap:18px;padding-bottom:12px;border-bottom:1px solid var(--border);}
 .hd h1{
   margin:0;font-size:27px;letter-spacing:5px;font-weight:700;
-  background:linear-gradient(90deg,#8fd9ff,#fff 45%,#59a6ff);
+  background:var(--grad-title);
   -webkit-background-clip:text;background-clip:text;color:transparent;
 }
-.hd .tag{font-size:12px;color:var(--cyan);border:1px solid var(--line);padding:2px 10px;border-radius:20px;letter-spacing:1px;}
-.hd .tag#scrError{color:var(--red);border-color:var(--red);}
+.hd .tag{font-size:12px;color:var(--primary2);border:1px solid var(--border);padding:2px 10px;border-radius:20px;letter-spacing:1px;}
+.hd .tag#scrError{color:var(--danger);border-color:var(--danger);}
 .hd .sp{flex:1;}
-.hd .clock{font-size:15px;color:var(--sub);font-variant-numeric:tabular-nums;}
-.hd .clock b{color:var(--txt);font-size:21px;margin-right:10px;}
-.hd a{color:var(--sub);text-decoration:none;font-size:12.5px;border:1px solid var(--line);padding:4px 12px;border-radius:6px;}
-.hd a:hover{color:var(--cyan);border-color:var(--cyan);}
+.hd .clock{font-size:15px;color:var(--text-sub);font-variant-numeric:tabular-nums;}
+.hd .clock b{color:var(--text);font-size:21px;margin-right:10px;}
+.hd a{color:var(--text-sub);text-decoration:none;font-size:12.5px;border:1px solid var(--border);padding:4px 12px;border-radius:6px;}
+.hd a:hover{color:var(--primary2);border-color:var(--primary2);}
 
 /* KPI */
 .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:14px 0;}
 .kpi{
-  background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;
+  background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 16px;
   position:relative;overflow:hidden;backdrop-filter:blur(6px);
 }
-.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--blue);}
-.kpi.c1::before{background:var(--cyan);} .kpi.c2::before{background:var(--orange);}
-.kpi.c3::before{background:var(--green);} .kpi.c4::before{background:var(--red);}
-.kpi .k{font-size:12.5px;color:var(--sub);letter-spacing:1px;}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--primary);}
+.kpi.c1::before{background:var(--primary2);} .kpi.c2::before{background:var(--warn);}
+.kpi.c3::before{background:var(--success);} .kpi.c4::before{background:var(--danger);}
+.kpi .k{font-size:12.5px;color:var(--text-sub);letter-spacing:1px;}
 .kpi .v{font-size:32px;font-weight:700;line-height:1.25;font-variant-numeric:tabular-nums;}
-.kpi .v small{font-size:14px;margin-left:3px;color:var(--sub);font-weight:400;}
+.kpi .v small{font-size:14px;margin-left:3px;color:var(--text-sub);font-weight:400;}
 .kpi .v.small{font-size:21px;}
-.kpi.c1 .v{color:var(--cyan);} .kpi.c2 .v{color:var(--orange);}
-.kpi.c3 .v{color:var(--green);} .kpi.c4 .v{color:var(--red);}
-.kpi .d{font-size:11.5px;color:var(--sub);margin-top:2px;}
+.kpi.c1 .v{color:var(--primary2);} .kpi.c2 .v{color:var(--warn);}
+.kpi.c3 .v{color:var(--success);} .kpi.c4 .v{color:var(--danger);}
+.kpi .d{font-size:11.5px;color:var(--text-sub);margin-top:2px;}
 
 /* 主体 */
 .main{flex:1;display:grid;grid-template-columns:1.15fr 1.15fr .92fr;gap:14px;min-height:0;}
 .card{
-  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  background:var(--panel);border:1px solid var(--border);border-radius:10px;
   display:flex;flex-direction:column;min-height:0;backdrop-filter:blur(6px);
 }
 .card-hd{
-  padding:11px 16px;border-bottom:1px solid var(--line);
+  padding:11px 16px;border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:9px;font-size:15px;font-weight:600;letter-spacing:1px;
 }
-.card-hd .bar{width:3px;height:14px;border-radius:2px;background:var(--cyan);}
-.card-hd .cnt{margin-left:auto;font-size:12.5px;color:var(--sub);font-weight:400;}
+.card-hd .bar{width:3px;height:14px;border-radius:2px;background:var(--primary2);}
+.card-hd .cnt{margin-left:auto;font-size:12.5px;color:var(--text-sub);font-weight:400;}
 .card-bd{flex:1;overflow:hidden;position:relative;padding:6px 0;}
 .scroller{position:absolute;inset:0;overflow-y:auto;padding:4px 12px;}
 .scroller::-webkit-scrollbar{width:5px;}
-.scroller::-webkit-scrollbar-thumb{background:rgba(90,160,255,.35);border-radius:3px;}
+.scroller::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:3px;}
 .split{display:flex;flex-direction:column;gap:14px;min-height:0;}
 .split>.card{flex:1;min-height:0;}
 
 /* 任务条目 */
 .item{
   padding:9px 12px;border-radius:8px;margin-bottom:7px;
-  background:rgba(255,255,255,.035);border-left:3px solid var(--blue);
+  background:var(--surface-soft);border-left:3px solid var(--primary);
   display:flex;gap:12px;align-items:center;transition:background .2s;
 }
-.item:hover{background:rgba(90,160,255,.12);}
-.item.pri-urgent{border-left-color:var(--red);}
-.item.pri-high{border-left-color:var(--orange);}
-.item.done{border-left-color:var(--green);}
-.item .id{font-family:Consolas,monospace;font-size:11.5px;color:var(--sub);width:52px;flex:none;}
+.item:hover{background:rgba(var(--accent-rgb),.12);}
+.item.pri-urgent{border-left-color:var(--danger);}
+.item.pri-high{border-left-color:var(--warn);}
+.item.done{border-left-color:var(--success);}
+.item .id{font-family:Consolas,monospace;font-size:11.5px;color:var(--text-mute);width:52px;flex:none;}
 .item .body{flex:1;min-width:0;}
 .item .tt{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.item .mt{font-size:11.5px;color:var(--sub);margin-top:2px;}
+.item .mt{font-size:11.5px;color:var(--text-sub);margin-top:2px;}
 .item .rt{text-align:right;flex:none;font-size:12px;}
 .item .rt .big{font-size:14.5px;font-weight:700;font-variant-numeric:tabular-nums;}
-.tone-run{color:var(--orange);} .tone-done{color:var(--green);} .tone-late{color:var(--red);}
+.tone-run{color:var(--warn);} .tone-done{color:var(--success-fg);} .tone-late{color:var(--danger);}
 .chip{display:inline-block;padding:0 7px;border-radius:10px;font-size:10.5px;margin-left:6px;
-  background:rgba(120,180,255,.16);color:#9fc6ff;}
-.chip.late{background:rgba(255,92,114,.18);color:#ff8ea0;}
+  background:rgba(var(--accent-rgb),.16);color:var(--accent-fg);}
+.chip.late{background:rgba(var(--danger-rgb),.18);color:var(--danger-fg);}
 
 /* 排行 */
 .rank{display:flex;align-items:center;gap:10px;padding:7px 12px;}
 .rank .no{
   width:20px;height:20px;border-radius:5px;display:grid;place-items:center;flex:none;
-  font-size:11.5px;font-weight:700;background:rgba(120,180,255,.15);color:#9fc6ff;
+  font-size:11.5px;font-weight:700;background:rgba(var(--accent-rgb),.15);color:var(--accent-fg);
 }
 .rank .no.t1{background:linear-gradient(135deg,#ffb531,#ff8a00);color:#231400;}
 .rank .no.t2{background:linear-gradient(135deg,#cfe0f5,#9db4cc);color:#1c2635;}
 .rank .no.t3{background:linear-gradient(135deg,#e0a06a,#b97b45);color:#241203;}
 .rank .nm{width:74px;flex:none;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.rank .track{flex:1;height:16px;border-radius:4px;background:rgba(255,255,255,.06);overflow:hidden;display:flex;}
+.rank .track{flex:1;height:16px;border-radius:4px;background:var(--surface-soft);overflow:hidden;display:flex;}
 .rank .track i{display:block;height:100%;}
-.rank .track i.d{background:linear-gradient(90deg,#12a86a,#22e08a);}
-.rank .track i.r{background:linear-gradient(90deg,#2f6bd8,#54a6ff);}
-.rank .nums{width:78px;flex:none;text-align:right;font-size:11.5px;color:var(--sub);font-variant-numeric:tabular-nums;}
-.rank .nums b{color:var(--green);}
+.rank .track i.d{background:linear-gradient(90deg,var(--success-deep),var(--success));}
+.rank .track i.r{background:linear-gradient(90deg,var(--primary-dark),var(--primary));}
+.rank .nums{width:78px;flex:none;text-align:right;font-size:11.5px;color:var(--text-sub);font-variant-numeric:tabular-nums;}
+.rank .nums b{color:var(--success-fg);}
 
 /* 趋势 */
 .trend{display:flex;align-items:flex-end;gap:10px;height:100%;padding:14px 16px 8px;}
 .trend .col{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;height:100%;justify-content:flex-end;}
 .trend .bars{display:flex;gap:3px;align-items:flex-end;height:100%;width:100%;justify-content:center;}
 .trend .bars i{width:11px;border-radius:3px 3px 0 0;min-height:2px;transition:height .5s;}
-.trend .bars i.c{background:linear-gradient(180deg,#54a6ff,#2f6bd8);}
-.trend .bars i.d{background:linear-gradient(180deg,#22e08a,#12a86a);}
-.trend .lb{font-size:11px;color:var(--sub);}
-.legend{display:flex;gap:14px;font-size:11.5px;color:var(--sub);padding:0 16px 10px;}
+.trend .bars i.c{background:linear-gradient(180deg,var(--primary),var(--primary-dark));}
+.trend .bars i.d{background:linear-gradient(180deg,var(--success),var(--success-deep));}
+.trend .lb{font-size:11px;color:var(--text-sub);}
+.legend{display:flex;gap:14px;font-size:11.5px;color:var(--text-sub);padding:0 16px 10px;}
 .legend s{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px;text-decoration:none;}
 
 /* 类别 */
 .cat{display:flex;align-items:center;gap:9px;padding:5px 14px;font-size:12.5px;}
 .cat .nm{width:88px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.cat .track{flex:1;height:7px;border-radius:4px;background:rgba(255,255,255,.06);overflow:hidden;}
-.cat .track i{display:block;height:100%;background:linear-gradient(90deg,#31e2f2,#3d8bff);}
-.cat .nums{width:58px;text-align:right;color:var(--sub);font-variant-numeric:tabular-nums;}
+.cat .track{flex:1;height:7px;border-radius:4px;background:var(--surface-soft);overflow:hidden;}
+.cat .track i{display:block;height:100%;background:var(--grad-accent);}
+.cat .nums{width:58px;text-align:right;color:var(--text-sub);font-variant-numeric:tabular-nums;}
 
-.blank{text-align:center;color:var(--sub);padding:36px 0;font-size:13px;}
-.live{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);
+.blank{text-align:center;color:var(--text-sub);padding:36px 0;font-size:13px;}
+.live{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--success);
   margin-right:6px;animation:bl 1.5s infinite;}
 @keyframes bl{0%,100%{opacity:1}50%{opacity:.2}}
 
@@ -150,7 +149,7 @@ body::before{
 </head>
 <body>
 <div class="screen">
-  <div class="hd">
+  <div class="hd" data-theme-mount>
     <h1>任务执行监控大屏</h1>
     <span class="tag"><span class="live"></span>实时数据</span>
     <span class="tag" id="scrError" hidden></span>
@@ -163,13 +162,13 @@ body::before{
 
   <div class="main">
     <div class="card">
-      <div class="card-hd"><span class="bar" style="background:var(--orange)"></span>执行中任务
+      <div class="card-hd"><span class="bar" style="background:var(--warn)"></span>执行中任务
         <span class="cnt" id="cntRun"></span></div>
       <div class="card-bd"><div class="scroller" id="listRun"></div></div>
     </div>
 
     <div class="card">
-      <div class="card-hd"><span class="bar" style="background:var(--green)"></span>已完成任务（含执行耗时）
+      <div class="card-hd"><span class="bar" style="background:var(--success)"></span>已完成任务（含执行耗时）
         <span class="cnt" id="cntDone"></span></div>
       <div class="card-bd"><div class="scroller" id="listDone"></div></div>
     </div>
@@ -180,20 +179,20 @@ body::before{
         <div class="card-bd"><div class="scroller" id="listRank"></div></div>
       </div>
       <div class="card">
-        <div class="card-hd"><span class="bar" style="background:var(--green)"></span>近 7 日任务趋势</div>
+        <div class="card-hd"><span class="bar" style="background:var(--success)"></span>近 7 日任务趋势</div>
         <div class="card-bd" style="display:flex;flex-direction:column">
           <div class="trend" id="trend"></div>
-          <div class="legend"><span><s style="background:#3d8bff"></s>新建</span><span><s style="background:#22e08a"></s>完成</span></div>
+          <div class="legend"><span><s style="background:var(--primary)"></s>新建</span><span><s style="background:var(--success)"></s>完成</span></div>
         </div>
       </div>
       <div class="card">
-        <div class="card-hd"><span class="bar" style="background:var(--cyan)"></span>任务类别分布</div>
+        <div class="card-hd"><span class="bar" style="background:var(--primary2)"></span>任务类别分布</div>
         <div class="card-bd"><div class="scroller" id="listCat"></div></div>
       </div>
     </div>
   </div>
 </div>
 
-<script src="/js/screen.js?v=20260825-2"></script>
+<script src="/js/screen.js?v=20260828-1"></script>
 </body>
 </html>
