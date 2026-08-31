@@ -93,7 +93,7 @@ async function load() {
         <div class="mt">发布者 ${esc(t.creator_name)}　·　接收人 ${esc(t.assignee_name)}（${esc(ROLE[t.assignee_role] || t.assignee_role)}）　·　派发 ${fmt(t.created_at)}　·　${PRI[t.priority]}优先级</div>
       </div>
       <div class="rt"><div class="big ${t.overdue ? 'tone-late' : 'tone-run'}">${elapsed(t.created_at)}</div>
-        <div style="color:var(--text-sub);font-size:11px">已进行</div></div>
+        <div class="t-sub-xs">已进行</div></div>
     </div>`).join('') : '<div class="blank">当前没有执行中的任务</div>';
 
   /* 已完成 */
@@ -106,7 +106,7 @@ async function load() {
         <div class="mt">发布者 ${esc(t.creator_name)}　·　接收人 ${esc(t.assignee_name)}（${esc(ROLE[t.assignee_role] || t.assignee_role)}）　·　完成 ${fmt(t.completed_at)}</div>
       </div>
       <div class="rt"><div class="big tone-done">${esc(t.duration_text)}</div>
-        <div style="color:var(--text-sub);font-size:11px">执行耗时</div></div>
+        <div class="t-sub-xs">执行耗时</div></div>
     </div>`).join('') : '<div class="blank">暂无已完成任务</div>';
 
   /* 所有角色任务接收分布 */
@@ -117,31 +117,45 @@ async function load() {
       <div class="no ${i < 3 ? 't' + (i + 1) : ''}">${i + 1}</div>
       <div class="nm" title="${esc(e.name)} · ${esc(ROLE[e.role] || e.role)}">${esc(e.name)}<small> · ${esc(ROLE[e.role] || e.role)}</small></div>
       <div class="track">
-        <i class="d" style="width:${(e.done / maxTotal) * 100}%"></i>
-        <i class="r" style="width:${(e.running / maxTotal) * 100}%"></i>
+        <i class="d"></i>
+        <i class="r"></i>
       </div>
       <div class="nums"><b>${e.done}</b>/${e.total}　${e.rate}%</div>
     </div>`).join('') : '<div class="blank">暂无数据</div>';
+  // CSP 已禁止 style 属性：动态百分比在渲染后经 CSSOM 写入（element.style 赋值不受 style-src 限制）
+  $('#listRank').querySelectorAll('.rank').forEach((row, i) => {
+    const e = recipients[i];
+    row.querySelector('.track i.d').style.width = `${(e.done / maxTotal) * 100}%`;
+    row.querySelector('.track i.r').style.width = `${(e.running / maxTotal) * 100}%`;
+  });
 
   /* 趋势 */
   const maxTrend = Math.max(1, ...data.trend.map((d) => Math.max(d.created, d.done)));
   $('#trend').innerHTML = data.trend.map((d) => `
     <div class="col">
       <div class="bars">
-        <i class="c" style="height:${(d.created / maxTrend) * 100}%" title="新建 ${d.created}"></i>
-        <i class="d" style="height:${(d.done / maxTrend) * 100}%" title="完成 ${d.done}"></i>
+        <i class="c" title="新建 ${d.created}"></i>
+        <i class="d" title="完成 ${d.done}"></i>
       </div>
       <div class="lb">${d.date}</div>
     </div>`).join('');
+  $('#trend').querySelectorAll('.col').forEach((col, i) => {
+    const d = data.trend[i];
+    col.querySelector('.bars i.c').style.height = `${(d.created / maxTrend) * 100}%`;
+    col.querySelector('.bars i.d').style.height = `${(d.done / maxTrend) * 100}%`;
+  });
 
   /* 类别 */
   const maxCat = Math.max(1, ...data.categories.map((c) => c.total));
   $('#listCat').innerHTML = data.categories.length ? data.categories.map((c) => `
     <div class="cat">
       <div class="nm" title="${esc(c.category)}">${esc(c.category)}</div>
-      <div class="track"><i style="width:${(c.total / maxCat) * 100}%"></i></div>
+      <div class="track"><i></i></div>
       <div class="nums">${c.done}/${c.total}</div>
     </div>`).join('') : '<div class="blank">暂无数据</div>';
+  $('#listCat').querySelectorAll('.cat').forEach((row, i) => {
+    row.querySelector('.track i').style.width = `${(data.categories[i].total / maxCat) * 100}%`;
+  });
 }
 
 load();

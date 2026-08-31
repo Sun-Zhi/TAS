@@ -11,6 +11,16 @@ const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'taskassign-e2e-'));
 // 默认值仅用于临时测试进程；生产部署请勿沿用
 const ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || 'admin123';
 const DEMO_PASSWORD = process.env.TEST_DEMO_PASSWORD || 'demo1234';
+// 测试进程选择「test」环境：后续会直接打开隔离临时库（灌批量数据验证导出截断），
+// 且子进程 spawn 显式固定 NODE_ENV，避免继承外层 NODE_ENV=production 时
+// auth 生产 fail-closed / 演示账号拒绝逻辑导致测试服务启动即退出（评审 P2）
+process.env.NODE_ENV = 'test';
+process.env.DATA_DIR = path.join(TEST_ROOT, 'data');
+process.env.UPLOAD_DIR = path.join(TEST_ROOT, 'uploads');
+process.env.ADMIN_PASSWORD = ADMIN_PASSWORD;
+process.env.ENABLE_DEMO_ACCOUNTS = '1';
+process.env.DEMO_PASSWORD = DEMO_PASSWORD;
+const { db } = require('../src/db');
 // 端口通过实际探测确定，避免 pid 派生端口被其他进程占用导致测试失败
 let PORT;
 let BASE;
@@ -46,15 +56,21 @@ async function req(path, { method = 'GET', token, body, raw } = {}) {
     headers,
     body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
   });
-  if (raw) return { status: res.status, text: await res.text() };
+  if (raw) return { status: res.status, text: await res.text(), setCookies: [], headers: res.headers };
   const ct = res.headers.get('content-type') || '';
-  return { status: res.status, data: ct.includes('json') ? await res.json() : await res.text() };
+  // getSetCookie 在低版本 Node 可能不存在，兜底为空数组
+  const setCookies = res.headers.getSetCookie ? res.headers.getSetCookie() : [];
+  return { status: res.status, data: ct.includes('json') ? await res.json() : await res.text(), setCookies };
 }
 
 async function login(username, password) {
   const r = await req('/api/auth/login', { method: 'POST', body: { username, password } });
   if (r.status !== 200) throw new Error(`${username} 登录失败: ${JSON.stringify(r.data)}`);
-  return r.data.token;
+  // 登录响应体不再回传 token（安全评审 M2）：会话令牌只经 Set-Cookie 下发，
+  // 此处解析 ta_token 供后续 x-auth-token 复用；浏览器端完全依赖 HttpOnly Cookie
+  const cookie = (r.setCookies || []).find((c) => c.startsWith('ta_token='));
+  if (!cookie) throw new Error(`${username} 登录响应缺少 ta_token 会话 Cookie`);
+  return cookie.slice('ta_token='.length).split(';')[0];
 }
 
 async function startServer() {
@@ -62,6 +78,7 @@ async function startServer() {
     cwd: path.join(__dirname, '..'),
     env: {
       ...process.env,
+      NODE_ENV: 'test',
       HOST: '127.0.0.1',
       PORT: String(PORT),
       DATA_DIR: path.join(TEST_ROOT, 'data'),
@@ -92,6 +109,8 @@ async function stopServer() {
     server.kill();
     await new Promise((resolve) => server.once('exit', resolve));
   }
+  // 父进程为灌批量数据也打开了临时库：先关连接否则 Windows 下句柄占用导致删目录 EPERM
+  try { db.close(); } catch { /* 未打开或已关闭则忽略 */ }
   fs.rmSync(TEST_ROOT, { recursive: true, force: true });
 }
 
@@ -104,6 +123,9 @@ async function stopServer() {
   const pm = await login('pm01', DEMO_PASSWORD);
   const dev = await login('dev01', DEMO_PASSWORD);
   ok(admin && pm && dev, '三种角色均可登录');
+  // 安全评审 M2：登录响应体不再回传会话令牌（只经 HttpOnly Cookie 下发）
+  const m2Probe = await req('/api/auth/login', { method: 'POST', body: { username: 'dev01', password: DEMO_PASSWORD } });
+  ok(m2Probe.status === 200 && m2Probe.data.token === undefined, '登录响应体不回传会话 token（M2）');
   const bad = await req('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } });
   ok(bad.status === 401, '错误密码被拒绝');
   const lockStatuses = [];
@@ -386,6 +408,9 @@ async function stopServer() {
   ok(scr.status === 200, '大屏接口可访问');
   ok(typeof scr.data.summary.total === 'number' && scr.data.summary.total > 0, `大屏统计正常（共 ${scr.data.summary.total} 个任务）`);
   ok(Array.isArray(scr.data.running) && Array.isArray(scr.data.done), '大屏返回执行中/已完成两个列表');
+  // 安全评审 M1：大屏明细不再下发退回理由（内部沟通内容不进全局视图）
+  ok([...scr.data.running, ...scr.data.done].every((task) => task.return_reason === undefined),
+    '大屏明细不下发退回理由 return_reason（M1）');
   const screenCreatorRoles = new Set([...scr.data.running, ...scr.data.done].map((task) => task.creator_role));
   ok(screenCreatorRoles.has('executor') && screenCreatorRoles.has('assigner'),
     '大屏执行中和已完成明细包含不同发布角色创建的任务');
@@ -412,6 +437,14 @@ async function stopServer() {
   // 断言与 humanDuration 输出格式一致（如「0分」「1小时5分」「2天3小时15分」），
   // 而非仅 != '-'，确保平均耗时计算真实产出可读时长
   ok(/^(\d+天)?(\d+小时)?\d+分$/.test(scr.data.summary.avg_duration_text), `平均耗时：${scr.data.summary.avg_duration_text}`);
+  // 安全评审 M3：大屏读取限流 30 次/分钟，按用户×端点独立计数（bucket 隔离）。
+  // screen 桶此前仅被本节消耗 1 次，突发请求直至首次 429。
+  const screenStatuses = [];
+  for (let i = 0; i < 35 && !screenStatuses.includes(429); i++) {
+    screenStatuses.push((await req('/api/screen', { token: admin })).status);
+  }
+  ok(screenStatuses.length < 35 && screenStatuses[screenStatuses.length - 1] === 429,
+    '大屏接口触发按用户读取限流（M3）', `连续 ${screenStatuses.length} 次后触发 429`);
 
   console.log('\n【7】按执行者导出');
   const exp = await req(`/api/export?assignee_id=${newUserId}`, { token: admin, raw: true });
@@ -454,6 +487,32 @@ async function stopServer() {
     expPm.text.includes('首页改版需求评审') &&
     expPm.text.includes('执行者派发给分配者'),
   '分配者导出同时包含自己发布和承接的任务');
+  // 安全评审 M3：导出限流 10 次/分钟，按用户×端点独立计数（bucket 隔离）。
+  // export 桶此前仅被 expPm 消耗 1 次，突发请求直至首次 429。
+  const exportStatuses = [];
+  for (let i = 0; i < 15 && !exportStatuses.includes(429); i++) {
+    exportStatuses.push((await req('/api/export', { token: pm, raw: true })).status);
+  }
+  ok(exportStatuses.length < 15 && exportStatuses[exportStatuses.length - 1] === 429,
+    '导出接口触发按用户限流（M3）', `连续 ${exportStatuses.length} 次后触发 429`);
+  // 评审 P1：导出达到 EXPORT_MAX_ROWS(10000) 时服务端只下发部分数据，必须置
+  // X-Export-Truncated 明确告知调用方，不能静默截断。批量数据直接灌进本测试的
+  // 隔离临时库（与 task-security-regression 同模式），不影响真实 data/。
+  const adminRow = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
+  const bulkTs = new Date().toISOString();
+  db.prepare('BEGIN').run();
+  const bulkInsert = db.prepare(
+    'INSERT INTO tasks (title, description, category, priority, status, creator_id, assignee_id, created_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  );
+  for (let i = 0; i < 10001; i++) {
+    bulkInsert.run(`e2e_批量导出_${i}`, '', '批量测试', 'normal', 'in_progress', adminRow.id, adminRow.id, bulkTs);
+  }
+  db.prepare('COMMIT').run();
+  const bulkExport = await req('/api/export', { token: admin, raw: true });
+  ok(bulkExport.status === 200 && bulkExport.headers.get('X-Export-Truncated') === '10000',
+    '超过 10000 行的导出置 X-Export-Truncated=10000 告知调用方',
+    bulkExport.headers.get('X-Export-Truncated') || `HTTP ${bulkExport.status}`);
 
   console.log('\n【8】清理校验');
   const delUser = await req('/api/users/' + newUserId, { method: 'DELETE', token: admin });

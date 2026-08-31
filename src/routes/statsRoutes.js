@@ -7,12 +7,36 @@ const { taskDuration, humanDuration, toCSV, fmtLocal, PRIORITY_TEXT, STATUS_TEXT
 const taskRoutes = require('./taskRoutes');
 
 const router = express.Router();
-const { BASE_SELECT, scopeClause, decorate } = taskRoutes;
+const { BASE_SELECT, scopeClause, decorate, userRateLimited } = taskRoutes;
 
+// 读取侧限流（安全评审 M3）：大屏页面 10 秒轮询（约 6 次/分钟/客户端），
+// 阈值留出多块大屏并存的余量；导出为低频人工操作，阈值更低。
+const SCREEN_MAX_PER_MIN = 30;
+const EXPORT_MAX_PER_MIN = 10;
+// 导出单次最大行数：与任务列表的 LIMIT 同思路，约束管理员全量导出的
+// 内存放大（全库逐行构造 CSV），正常团队任务量远低于该值。
+const EXPORT_MAX_ROWS = 10000;
+
+function limitScreenRead(req, res, next) {
+  if (userRateLimited(req.user.id, SCREEN_MAX_PER_MIN, 'screen')) {
+    return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+  }
+  next();
+}
+
+function limitExport(req, res, next) {
+  if (userRateLimited(req.user.id, EXPORT_MAX_PER_MIN, 'export')) {
+    return res.status(429).json({ error: '导出过于频繁，请稍后再试' });
+  }
+  next();
+}
+
+// 大屏看板只需要展示字段；不含 return_reason——退回理由是内部评价文本，
+// 大屏不渲染它，任何登录角色都不应通过 /api/screen 读到全量理由（安全评审 M1）。
 const SCREEN_SELECT = `
   SELECT t.id, t.title, t.category, t.priority, t.status, t.assignee_id,
          t.due_at, t.created_at, t.completed_at, t.completion_requested_at,
-         t.returned_at, t.return_reason,
+         t.returned_at,
          au.name AS assignee_name, au.dept AS assignee_dept, au.role AS assignee_role,
          cu.name AS creator_name, cu.role AS creator_role
   FROM tasks t
@@ -136,7 +160,7 @@ function buildScreenTrend() {
   });
 }
 
-router.get('/screen', requireLogin, (req, res) => {
+router.get('/screen', requireLogin, limitScreenRead, (req, res) => {
   // 大屏是全局监控视图：所有已登录角色看到相同的汇总、任务明细和人员分布。
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -200,7 +224,7 @@ router.get('/overview', requireLogin, (req, res) => {
 
 /* ---------------- 导出 CSV ---------------- */
 
-router.get('/export', requireLogin, (req, res) => {
+router.get('/export', requireLogin, limitExport, (req, res) => {
   const { assignee_id, status, category } = req.query;
   const where = [];
   const args = [];
@@ -234,9 +258,11 @@ router.get('/export', requireLogin, (req, res) => {
   if (category) { where.push('t.category = ?'); args.push(String(category)); }
 
   const rows = db
-    .prepare(`${BASE_SELECT} WHERE ${where.join(' AND ')} ORDER BY t.category, t.created_at DESC`)
-    .all(...args)
+    .prepare(`${BASE_SELECT} WHERE ${where.join(' AND ')} ORDER BY t.category, t.created_at DESC LIMIT ?`)
+    .all(...args, EXPORT_MAX_ROWS)
     .map(decorate);
+  // 行数达到上限即视为可能截断：显式告知调用方并留服务端日志，避免静默缺行
+  const possiblyTruncated = rows.length >= EXPORT_MAX_ROWS;
 
   const data = rows.map((t) => [
     `T${String(t.id).padStart(4, '0')}`,
@@ -260,6 +286,10 @@ router.get('/export', requireLogin, (req, res) => {
   const csv = toCSV(data);
   const stamp = new Date().toISOString().slice(0, 10);
   const filename = `任务清单_${who}_${stamp}.csv`;
+  if (possiblyTruncated) {
+    res.setHeader('X-Export-Truncated', String(EXPORT_MAX_ROWS));
+    console.warn(`[export] 用户 ${req.user.username} 的导出达到上限 ${EXPORT_MAX_ROWS} 行，结果可能不完整`);
+  }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader(
     'Content-Disposition',

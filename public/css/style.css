@@ -862,3 +862,30 @@ table.tbl tbody tr.sel:hover { background: rgba(var(--accent2-rgb), .18); }
   .grid2 { grid-template-columns: 1fr; }
   .container { padding: 14px; }
 }
+
+/* ============ 通用工具类 ============
+ * 页面与 JS 模板用工具类替代内联 style 属性：CSP 的 style-src 已收紧为
+ * 'self'（安全评审 M4），style 属性里的声明会被浏览器整体忽略。
+ * 颜色类只引用主题语义令牌，随四套主题联动；!important 仅用于 .hidden，
+ * 保证初始隐藏不被任何 display 规则意外翻出。 */
+.hidden { display: none !important; }
+.t-success { color: var(--success-fg); }
+.t-amber { color: var(--amber-fg); }
+.t-purple { color: var(--purple-fg); }
+.t-warn { color: var(--warn); }
+.t-mute { color: var(--text-mute); }
+.t-sub-xs { color: var(--text-sub); font-size: 11px; }
+.fs-13 { font-size: 13px; }
+.fs-15 { font-size: 15px; }
+.nowrap { white-space: nowrap; }
+.pre-wrap { white-space: pre-wrap; }
+.ml-auto { margin-left: auto; }
+.ml-8 { margin-left: 8px; }
+.mt-4 { margin-top: 4px; }
+.mt-8 { margin-top: 8px; }
+.px-8 { padding-left: 8px; padding-right: 8px; }
+.mw-420 { max-width: 420px; }
+.mw-440 { max-width: 440px; }
+.mw-460 { max-width: 460px; }
+.mw-480 { max-width: 480px; }
+.mw-560 { max-width: 560px; }

@@ -48,7 +48,7 @@ function markDone(id) {
   const t = state.tasks.find((x) => x.id === id);
   $('#doneTaskInfo').innerHTML = t
     ? `<b>T${String(t.id).padStart(4, '0')} · ${esc(t.title)}</b>
-       <div class="cell-sub" style="margin-top:4px">执行人 ${esc(t.assignee_name)}　·　已进行 ${elapsed(t.created_at)}</div>`
+       <div class="cell-sub mt-4">执行人 ${esc(t.assignee_name)}　·　已进行 ${elapsed(t.created_at)}</div>`
     : `<b>任务 T${String(id).padStart(4, '0')}</b>`;
   $('#doneNote').value = '';
   donePendingFiles = [];
@@ -62,7 +62,7 @@ function returnTask(id) {
   const t = state.tasks.find((task) => task.id === id);
   $('#returnTaskInfo').innerHTML = t
     ? `<b>T${String(t.id).padStart(4, '0')} · ${esc(t.title)}</b>
-       <div class="cell-sub" style="margin-top:4px">发布者 ${esc(t.creator_name)}　·　执行人 ${esc(t.assignee_name)}</div>`
+       <div class="cell-sub mt-4">发布者 ${esc(t.creator_name)}　·　执行人 ${esc(t.assignee_name)}</div>`
     : `<b>任务 T${String(id).padStart(4, '0')}</b>`;
   $('#returnReason').value = '';
   $('#btnConfirmReturn').dataset.taskId = id;

@@ -21,7 +21,7 @@ const path = require('path');
 const express = require('express');
 const multer = require('multer');
 
-const { attachUser, cleanupSessions } = require('./src/auth');
+const { attachUser, cleanupSessions, isCookieSecure } = require('./src/auth');
 // 入口错误中间件在 multer 失败时复用 taskRoutes 的清理函数
 const { removeUploadedFiles } = require('./src/routes/taskRoutes');
 // 优雅关闭时需要关闭 SQLite 连接
@@ -35,18 +35,23 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 app.disable('x-powered-by');
 /* ---------------- HTTP 安全头 ---------------- */
-// script-src 已收紧为 'self'（前端已全部改为 addEventListener 事件委托，无内联脚本）。
-// style-src 保留 'unsafe-inline'：页面大量使用内联 style 属性，属样式展示层。
+// script-src 与 style-src 均已收紧为 'self'：前端无内联脚本，行内 style 属性已
+// 全部迁移为主题令牌工具类（安全评审 M4），大屏局部样式外置为 css/screen.css。
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  // HSTS 只在 HTTPS 部署下与 Secure Cookie 同一条件下发（安全评审 L2）：
+  // 明文 HTTP 上浏览器本会忽略该头，但若将来同一主机名短暂启用过 HTTPS，
+  // 无条件的 HSTS 会把客户端钉死在 HTTPS 上，造成难排查的「突然打不开」。
+  if (isCookieSecure()) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
+    "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
   );
   next();
 });

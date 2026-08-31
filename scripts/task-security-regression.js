@@ -251,7 +251,9 @@ async function main() {
 
   server = spawn(process.execPath, ['server.js'], {
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PORT: String(PORT) },
+    // 显式固定 NODE_ENV=test：外层 shell 若为 production，auth 的生产 fail-closed
+    // 会在 server.js 启动时直接抛错退出，测试服务永远起不来（评审 P2）
+    env: { ...process.env, NODE_ENV: 'test', PORT: String(PORT) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', (chunk) => { serverOutput += chunk; });

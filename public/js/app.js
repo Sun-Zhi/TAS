@@ -18,7 +18,7 @@ async function init() {
   $('#uAvatar').textContent = me.name.slice(0, 1);
 
   if (me.role === 'admin') {
-    $('#navUsers').style.display = '';
+    $('#navUsers').classList.remove('hidden');
     $('#scopeDesc').textContent = '管理员视角 · 可查看系统内全部任务';
     $('#responsibilityDesc').textContent = '管理员可定义每位执行者负责的岗位职责';
   } else if (me.role === 'assigner') {
@@ -26,7 +26,7 @@ async function init() {
   } else {
     $('#scopeDesc').textContent = '执行者视角 · 展示我发布或承接的任务';
   }
-  $('#btnNewTask').style.display = '';
+  $('#btnNewTask').classList.remove('hidden');
 
   await loadAssigneeOptions();
   await loadCategories();
@@ -171,12 +171,12 @@ function taskStatusBadge(t, withDot = true) {
 
 function renderTaskRow(t) {
   const timeCell = t.status === 'completed'
-    ? `<b style="color:var(--success-fg)">${esc(t.duration_text)}</b><div class="cell-sub">${fmt(t.completed_at)} 完成</div>`
+    ? `<b class="t-success">${esc(t.duration_text)}</b><div class="cell-sub">${fmt(t.completed_at)} 完成</div>`
     : t.returned
-      ? `<b style="color:var(--amber-fg)">任务已退回</b><div class="cell-sub">${fmt(t.returned_at)}</div>`
+      ? `<b class="t-amber">任务已退回</b><div class="cell-sub">${fmt(t.returned_at)}</div>`
       : t.awaiting_confirmation
-      ? `<b style="color:var(--purple-fg)">已提交完成申请</b><div class="cell-sub">${fmt(t.completion_requested_at)}</div>`
-      : `<span style="color:var(--warn)">已进行 ${elapsed(t.created_at)}</span>${t.due_at ? `<div class="cell-sub">要求 ${fmt(t.due_at)}</div>` : ''}`;
+      ? `<b class="t-purple">已提交完成申请</b><div class="cell-sub">${fmt(t.completion_requested_at)}</div>`
+      : `<span class="t-warn">已进行 ${elapsed(t.created_at)}</span>${t.due_at ? `<div class="cell-sub">要求 ${fmt(t.due_at)}</div>` : ''}`;
 
   const canRequestDone = t.status === 'in_progress' && !t.returned && !t.awaiting_confirmation &&
     isCurrentTaskRecipient(t);
@@ -202,7 +202,7 @@ function renderTaskRow(t) {
     <td>${taskStatusBadge(t)}</td>
     <td>${fmt(t.created_at)}</td>
     <td>${timeCell}</td>
-    <td style="white-space:nowrap">
+    <td class="nowrap">
       <button class="btn ghost sm" data-action="show-detail" data-id="${t.id}">详情</button>
       ${canRequestDone ? `<button class="btn success sm" data-action="mark-done" data-id="${t.id}">标记完成</button>` : ''}
       ${canRequestDone ? `<button class="btn danger sm" data-action="return-task" data-id="${t.id}">退回</button>` : ''}
@@ -220,7 +220,7 @@ function renderTasks() {
   if (!list.length) {
     $('#taskTableWrap').innerHTML =
       '<div class="empty"><div class="ico">📋</div>暂无与你相关的任务</div>';
-    $('#btnBatchDel').style.display = 'none';
+    $('#btnBatchDel').classList.add('hidden');
     return;
   }
 
@@ -274,10 +274,10 @@ function updateBatchDelUI() {
   const n = state.selectedIds.size;
   const btn = $('#btnBatchDel');
   if (n > 0 && state.tasks.some((t) => state.selectedIds.has(t.id) && canDelete(t))) {
-    btn.style.display = '';
+    btn.classList.remove('hidden');
     renderBatchDeleteButton(n);
   } else {
-    btn.style.display = 'none';
+    btn.classList.add('hidden');
   }
 }
 
@@ -336,7 +336,7 @@ function logsHtml(logs) {
 function detailBodyHtml(t, attHtml, logs, canUpload) {
   return `
     <div class="detail-row"><div class="lb">状态</div><div class="vl">${taskStatusBadge(t, false)}
-      <span class="pri ${t.priority}" style="margin-left:8px">优先级：${PRI_TEXT[t.priority]}</span></div></div>
+      <span class="pri ${t.priority} ml-8">优先级：${PRI_TEXT[t.priority]}</span></div></div>
     <div class="detail-row"><div class="lb">任务类别</div><div class="vl">${esc(t.category)}</div></div>
     <div class="detail-row"><div class="lb">任务接收人</div><div class="vl">${esc(t.assignee_name)} ${t.assignee_dept ? `<span class="cell-sub">· ${esc(t.assignee_dept)}</span>` : ''}</div></div>
     <div class="detail-row"><div class="lb">创建人</div><div class="vl">${esc(t.creator_name)}</div></div>
@@ -344,19 +344,19 @@ function detailBodyHtml(t, attHtml, logs, canUpload) {
     <div class="detail-row"><div class="lb">要求完成</div><div class="vl">${fmt(t.due_at)}</div></div>
     ${t.status === 'completed' ? `
       <div class="detail-row"><div class="lb">完成时间</div><div class="vl">${fmt(t.completed_at)}</div></div>
-      <div class="detail-row"><div class="lb">执行耗时</div><div class="vl"><b style="color:var(--success-fg);font-size:15px">${esc(t.duration_text)}</b></div></div>
+      <div class="detail-row"><div class="lb">执行耗时</div><div class="vl"><b class="t-success fs-15">${esc(t.duration_text)}</b></div></div>
       ${t.result_note ? `<div class="detail-row"><div class="lb">完成说明</div><div class="vl">${esc(t.result_note)}</div></div>` : ''}
     ` : t.returned ? `
-      <div class="detail-row"><div class="lb">退回时间</div><div class="vl"><b style="color:var(--amber-fg)">${fmt(t.returned_at)}</b></div></div>
-      <div class="detail-row"><div class="lb">退回理由</div><div class="vl" style="white-space:pre-wrap;color:var(--amber-fg)">${esc(t.return_reason)}</div></div>
+      <div class="detail-row"><div class="lb">退回时间</div><div class="vl"><b class="t-amber">${fmt(t.returned_at)}</b></div></div>
+      <div class="detail-row"><div class="lb">退回理由</div><div class="vl pre-wrap t-amber">${esc(t.return_reason)}</div></div>
     ` : t.awaiting_confirmation ? `
-      <div class="detail-row"><div class="lb">完成申请</div><div class="vl"><b style="color:var(--purple-fg)">${fmt(t.completion_requested_at)} 已提交</b></div></div>
-      <div class="detail-row"><div class="lb">完成说明</div><div class="vl" style="white-space:pre-wrap">${esc(t.completion_request_note) || '<span class="hint">未填写</span>'}</div></div>
-    ` : `<div class="detail-row"><div class="lb">已进行</div><div class="vl" style="color:var(--warn)">${elapsed(t.created_at)}</div></div>`}
-    <div class="detail-row"><div class="lb">任务描述</div><div class="vl" style="white-space:pre-wrap">${esc(t.description) || '<span class="hint">无</span>'}</div></div>
+      <div class="detail-row"><div class="lb">完成申请</div><div class="vl"><b class="t-purple">${fmt(t.completion_requested_at)} 已提交</b></div></div>
+      <div class="detail-row"><div class="lb">完成说明</div><div class="vl pre-wrap">${esc(t.completion_request_note) || '<span class="hint">未填写</span>'}</div></div>
+    ` : `<div class="detail-row"><div class="lb">已进行</div><div class="vl t-warn">${elapsed(t.created_at)}</div></div>`}
+    <div class="detail-row"><div class="lb">任务描述</div><div class="vl pre-wrap">${esc(t.description) || '<span class="hint">无</span>'}</div></div>
     <div class="detail-row"><div class="lb">附件</div><div class="vl">
       <div class="file-list">${attHtml}</div>
-      ${canUpload ? `<div style="margin-top:8px">
+      ${canUpload ? `<div class="mt-8">
         <input type="file" id="dtFiles" multiple hidden>
         <button class="btn ghost sm" id="dtUploadButton" data-action="trigger-dt-files">＋ 上传附件</button>
         <button class="btn ghost sm" id="dtCancelUpload" hidden>取消上传</button>
@@ -586,9 +586,32 @@ $('#btnDoExport').addEventListener('click', () => {
   const p = new URLSearchParams();
   if ($('#exAssignee').value) p.set('assignee_id', $('#exAssignee').value);
   if ($('#exStatus').value) p.set('status', $('#exStatus').value);
-  window.open('/api/export?' + p.toString(), '_blank');
+  // 用 fetch 而非 window.open：导出超过 10000 行时服务端只下发部分数据，
+  // 需读取 X-Export-Truncated 响应头明确告知用户，避免「文件不完整却不知情」。
+  fetch('/api/export?' + p.toString(), { credentials: 'same-origin' })
+    .then(async (res) => {
+      if (res.status === 401) { location.href = '/login.html'; return; }
+      if (!res.ok) throw new Error('导出失败，请稍后重试');
+      const truncated = res.headers.get('X-Export-Truncated');
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const nameMatch = disposition.match(/filename\*=UTF-8''([^;]+)/);
+      const filename = nameMatch ? decodeURIComponent(nameMatch[1]) : `tasks_${new Date().toISOString().slice(0, 10)}.csv`;
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+      if (truncated) {
+        toast(`导出行数已达上限 ${truncated} 行，结果可能不完整，请缩小筛选范围后重试`, 'err');
+      } else {
+        toast('已开始导出', 'ok');
+      }
+    })
+    .catch((e) => toast(e.message || '导出失败，请稍后重试', 'err'));
   closeModal('#exportModal');
-  toast('已开始导出', 'ok');
 });
 
 /* ---------------- 导航 ---------------- */
@@ -599,9 +622,9 @@ $$('.nav a[data-view]').forEach((a) => {
     const view = a.dataset.view;
     $$('.nav a').forEach((x) => x.classList.remove('active'));
     a.classList.add('active');
-    $('#view-tasks').style.display = view === 'tasks' ? '' : 'none';
-    $('#view-users').style.display = view === 'users' ? '' : 'none';
-    $('#view-responsibilities').style.display = view === 'responsibilities' ? '' : 'none';
+    $('#view-tasks').classList.toggle('hidden', view !== 'tasks');
+    $('#view-users').classList.toggle('hidden', view !== 'users');
+    $('#view-responsibilities').classList.toggle('hidden', view !== 'responsibilities');
     if (view === 'users') runAsync(() => loadUsers(), '用户列表加载失败');
     else if (view === 'responsibilities') runAsync(() => loadResponsibilities(), '岗位分工加载失败');
     else runAsync(() => refresh(), '任务列表刷新失败');
@@ -668,7 +691,7 @@ document.addEventListener('change', (event) => {
 let autoRefreshInFlight = false;
 function scheduleAutoRefresh() {
   setTimeout(async () => {
-    if ($('#view-tasks').style.display !== 'none' && !$$('.modal-mask.show').length && !autoRefreshInFlight) {
+    if (!$('#view-tasks').classList.contains('hidden') && !$$('.modal-mask.show').length && !autoRefreshInFlight) {
       autoRefreshInFlight = true;
       try {
         await refresh();

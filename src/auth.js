@@ -152,4 +152,6 @@ module.exports = {
   cleanupSessions,
   setAuthCookie,
   clearAuthCookie,
+  // 供 server.js 判断是否下发 HSTS（评审 L2：与 Cookie Secure 策略保持一致）
+  isCookieSecure,
 };

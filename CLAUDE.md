@@ -4,20 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-任务分配系统：多角色（admin / assigner / executor）任务派发、执行跟踪与数据大屏。纯 Node.js + Express，前端无构建步骤（原生 JS 经典脚本），数据库使用 Node 内置 `node:sqlite`（要求 Node >= 22.5.0）。代码注释、UI 文案、提交信息、测试断言均使用中文，新代码保持一致。
+任务分配系统：多角色（admin / assigner / executor）任务派发、执行跟踪与数据大屏。纯 Node.js + Express，前端无构建步骤（原生 JS 经典脚本），数据库使用 Node 内置 `node:sqlite`（Node >= 22.5.0；package.json `engines` 按测试工具链 jsdom 30 的底线声明为 `^22.22.2 || ^24.15.0 || >=26.0.0`，两者以 engines 为准）。代码注释、UI 文案、提交信息、测试断言均使用中文，新代码保持一致。
 
 ## 常用命令
 
 ```bash
 npm start                  # 启动服务（默认 0.0.0.0:3000；工作台 /index.html，大屏 /screen.html）
-npm test                   # 依次跑全部回归脚本：auth → utils → reset → task-security → e2e
+npm test                   # 依次跑全部回归脚本：auth → utils → theme → reset → task-security → e2e → ui
 node scripts/e2e-test.js   # 单独跑某个回归脚本
 npm run reset              # 清空数据库与附件、恢复默认账号（需先停服务）
 node scripts/seed-demo.js  # 向当前数据库灌入演示任务数据
 ```
 
 - 无本地 lint/format 配置；CI（`.gitea/workflows/`，Gitea Actions）在每次 push 做 gitleaks 密钥扫描、semgrep SAST、trivy 漏洞扫描（发现即阻断并自动开 Issue）。
-- 每个测试脚本自包含：自动创建临时 `DATA_DIR`/`UPLOAD_DIR`，e2e 还会在空闲端口自行拉起临时服务实例，不污染真实 `data/` 目录。
+- 每个测试脚本自包含：自动创建临时 `DATA_DIR`/`UPLOAD_DIR`，e2e 与 ui-test 还会在空闲端口自行拉起临时服务实例并自动清理，不污染真实 `data/` 目录。
 - 首次启动自动 seed admin 账号（口令走 `ADMIN_PASSWORD`，否则随机生成并仅打印一次）。本地开发可加 `ENABLE_DEMO_ACCOUNTS=1`：pm01/pm02（assigner）、dev01/dev02/ops01（executor），口令走 `DEMO_PASSWORD` 或随机打印；生产环境启用演示账号会直接退出。
 - `NODE_ENV=production` 时强制要求 `ADMIN_PASSWORD`、`DATA_DIR`、`UPLOAD_DIR`，缺失即退出。其他环境变量见 `server.js` 顶部与 `db.js`（`PORT`、`HOST`、`TRUST_PROXY`、`SECURE_COOKIES` 等）。
 
@@ -39,7 +39,7 @@ node scripts/seed-demo.js  # 向当前数据库灌入演示任务数据
   - `userRoutes.js` → `/api/users`（用户管理，含执行者岗位职责 responsibilities）
   - `taskRoutes.js` → `/api/tasks`（核心：任务 CRUD、完成申请/退回流程、附件上传下载；multer 限制 50MB×10 个、扩展名白名单，拒绝 SVG/exe 等）
   - `statsRoutes.js` → `/api/screen`、`/api/overview`、`/api/export`（CSV 导出）
-- 数据可见性：admin 全量；assigner/executor 只能看自己创建或承接的任务。完成流程为 executor 提交 completion-request → assigner 确认（确认前任务仍是 in_progress），可退回（return）给执行者。
+- 数据可见性：admin 全量；assigner/executor 只能看自己创建或承接的任务。完成流程为 executor 提交 completion-request → assigner 确认（确认前任务仍是 in_progress），可退回（return）给执行者。注意例外：数据大屏 `/api/screen` 是刻意的全局视图，所有已登录角色看到相同的汇总与明细（评审 L1 记录的有意决策，不是越权缺陷）。
 
 ### 前端（public/，无构建、无框架）
 

@@ -66,13 +66,16 @@ const ATTACH_UPLOAD_MAX_PER_MIN = 30;
 const RATE_LIMIT_MAX_ENTRIES = 10_000; // 防止恶意多用户 ID 撑爆内存
 const rateLimitStates = new Map();
 
-/** 滑窗限流检查：返回 true 表示本次请求应拒绝（限流内每次请求计数 1） */
-function userRateLimited(userId, maxPerWindow) {
+/** 滑窗限流检查：返回 true 表示本次请求应拒绝（限流内每次请求计数 1）。
+ *  bucket 区分各端点独立的配额（必传）：计数器若跨端点共享，大屏等高频读取
+ *  会挤占导出/任务创建的配额（安全评审 M3 验证中发现并修正）。 */
+function userRateLimited(userId, maxPerWindow, bucket) {
   const now = Date.now();
-  let timestamps = rateLimitStates.get(userId);
+  const key = `${bucket}:${userId}`;
+  let timestamps = rateLimitStates.get(key);
   if (!timestamps) {
     timestamps = [];
-    rateLimitStates.set(userId, timestamps);
+    rateLimitStates.set(key, timestamps);
   }
   // 滑窗：先丢弃窗口外的旧时间戳
   const cutoff = now - RATE_LIMIT_WINDOW_MS;
@@ -89,7 +92,7 @@ function userRateLimited(userId, maxPerWindow) {
 
 /** 创建任务限流：同一用户 60 次/分钟 */
 function limitTaskCreate(req, res, next) {
-  if (userRateLimited(req.user.id, TASK_CREATE_MAX_PER_MIN)) {
+  if (userRateLimited(req.user.id, TASK_CREATE_MAX_PER_MIN, 'task-create')) {
     return res.status(429).json({ error: '操作过于频繁，请稍后再试' });
   }
   next();
@@ -97,7 +100,7 @@ function limitTaskCreate(req, res, next) {
 
 /** 上传附件限流：同一用户 30 次/分钟 */
 function limitAttachmentUpload(req, res, next) {
-  if (userRateLimited(req.user.id, ATTACH_UPLOAD_MAX_PER_MIN)) {
+  if (userRateLimited(req.user.id, ATTACH_UPLOAD_MAX_PER_MIN, 'attach-upload')) {
     return res.status(429).json({ error: '操作过于频繁，请稍后再试' });
   }
   next();
@@ -808,6 +811,9 @@ router.get('/attachments/:aid/download', requireLogin, (req, res) => {
   if (!att) return res.status(404).send('附件不存在');
 
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(att.task_id);
+  // 孤儿附件兜底：正常由 FK CASCADE 保证不出现，但存量库若缺 CASCADE，
+  // 删除任务会残留附件行，这里返回 404 而非在 task.creator_id 上抛 500（评审 L3）
+  if (!task) return res.status(404).send('附件不存在');
   const u = req.user;
   const allowed = u.role === 'admin' || task.creator_id === u.id || task.assignee_id === u.id;
   if (!allowed) return res.status(403).send('无权下载该附件');
@@ -828,6 +834,8 @@ router.delete('/attachments/:aid', requireLogin, (req, res) => {
   const att = db.prepare('SELECT * FROM attachments WHERE id = ?').get(aid);
   if (!att) return res.status(404).json({ error: '附件不存在' });
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(att.task_id);
+  // 同上：孤儿附件兜底，避免存量库残留行导致 500（评审 L3）
+  if (!task) return res.status(404).json({ error: '附件不存在' });
   const u = req.user;
   const allowed = u.role === 'admin' || task.creator_id === u.id || att.uploader_id === u.id;
   if (!allowed) return res.status(403).json({ error: '无权删除该附件' });
@@ -863,5 +871,7 @@ module.exports = router;
 module.exports.BASE_SELECT = BASE_SELECT;
 module.exports.scopeClause = scopeClause;
 module.exports.decorate = decorate;
+// 供统计路由复用同一套按用户滑窗限流（/api/screen、/api/export，评审 M3）
+module.exports.userRateLimited = userRateLimited;
 // 供入口错误中间件在 multer 失败时清理已上传到磁盘的临时文件
 module.exports.removeUploadedFiles = removeUploadedFiles;

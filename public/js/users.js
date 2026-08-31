@@ -9,13 +9,13 @@ async function loadUsers() {
     <td><b>${esc(u.name)}</b><div class="cell-sub">${esc(u.username)}</div></td>
     <td><span class="badge ${u.role === 'admin' ? 'overdue' : u.role === 'assigner' ? 'running' : 'gray'}">${ROLE_TEXT[u.role]}</span></td>
     <td>${esc(u.dept || '-')}</td>
-    <td>${u.active ? '<span style="color:var(--success-fg)">启用</span>' : '<span style="color:var(--text-mute)">停用</span>'}</td>
+    <td>${u.active ? '<span class="t-success">启用</span>' : '<span class="t-mute">停用</span>'}</td>
     <td>创建 ${u.created_count} / 承接 ${u.assigned_count} / 完成 ${u.done_count}</td>
     <td>${fmt(u.created_at, false)}</td>
-    <td style="white-space:nowrap">
+    <td class="nowrap">
       <button class="btn ghost sm" data-action="edit-user" data-id="${u.id}">编辑</button>
       ${u.id === state.me.id
-        ? '<span class="cell-sub" style="padding:0 8px">当前登录</span>'
+        ? '<span class="cell-sub px-8">当前登录</span>'
         : `<button class="btn ghost sm" data-action="toggle-user" data-id="${u.id}" data-value="${u.active ? 0 : 1}">${u.active ? '停用' : '启用'}</button>
            <button class="btn danger sm" data-action="del-user" data-id="${u.id}">删除</button>`}
     </td></tr>`).join('');
@@ -145,7 +145,7 @@ function editResponsibility(id) {
   const user = state.responsibilityUsers.find((item) => item.id === id);
   if (!user) return toast('执行者信息不存在，请刷新后重试', 'err');
   $('#responsibilityUserId').value = user.id;
-  $('#responsibilityUserInfo').innerHTML = `<b>${esc(user.name)}</b><div class="cell-sub" style="margin-top:4px">${esc(user.dept || '未设置部门')} · ${esc(user.username)}</div>`;
+  $('#responsibilityUserInfo').innerHTML = `<b>${esc(user.name)}</b><div class="cell-sub mt-4">${esc(user.dept || '未设置部门')} · ${esc(user.username)}</div>`;
   $('#responsibilityText').value = user.responsibilities || '';
   openModal('#responsibilityModal');
   $('#responsibilityText').focus();

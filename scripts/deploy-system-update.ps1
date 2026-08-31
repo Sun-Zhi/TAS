@@ -175,10 +175,22 @@ try {
     try {
       Enable-ScheduledTask -TaskName $taskName -ErrorAction Stop | Out-Null
       Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
-      $recovery = if (Wait-ForHealth) {
-        'recovery=OK; task re-enabled and the service is healthy'
+      if (Wait-ForHealth) {
+        $recovery = 'recovery=OK; task re-enabled and the service is healthy'
       } else {
-        'recovery=DEGRADED; task re-enabled but the health check failed, the watchdog will retry within 5 minutes'
+        # Do not promise a watchdog retry here. The watchdog only starts the service
+        # when no instance is running: MultipleInstances=IgnoreNew makes Task Scheduler
+        # refuse the launch while an instance is alive, which is observable as
+        # LastTaskResult=0x800710E0. So an instance that is running but unhealthy is
+        # never retried - it stays broken until a human intervenes. Since the
+        # Start-ScheduledTask above succeeded, that is the more likely state here, and
+        # telling the operator to wait five minutes would be actively misleading.
+        $state = [string](Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
+        $recovery = if ($state -eq 'Running') {
+          'recovery=DEGRADED; the task is Running but the health check failed. The watchdog will NOT retry while an instance is alive (IgnoreNew), so this will NOT self-heal - inspect D:\TaskAssignData\logs\server.log and restart the task manually'
+        } else {
+          'recovery=DEGRADED; the health check failed and the task state is "{0}". No instance is running, so the watchdog should start one within 5 minutes - verify that it does, and inspect D:\TaskAssignData\logs\server.log' -f $state
+        }
       }
     } catch {
       $recovery = 'recovery=FAILED ({0}); the task is STILL DISABLED and its watchdog is inactive, so the service will NOT come back on its own - re-enable it manually with Enable-ScheduledTask' -f $_.Exception.Message

@@ -1,21 +1,40 @@
-/* UI 端到端测试：用 jsdom 加载真实前端页面与脚本，对 12345 端口上的隔离实例
- * 驱动真实用户操作（登录页、工作台启动、创建任务、未登录拦截），并断言渲染结果。
+/* UI 端到端测试：用 jsdom 加载真实前端页面与脚本，驱动真实用户操作（登录页、
+ * 工作台启动、创建任务、未登录拦截），并断言渲染结果。
  * 不依赖真实浏览器；fetch / XMLHttpRequest 由 Node 实现并共享 cookie 罐，
  * 因此走的是与浏览器一致的「cookie 会话 + 真实 API」链路。
  *
- * 用法：node scripts/ui-test.js
- * 前置：server.js 已在 127.0.0.1:12345 启动（隔离 DATA_DIR / UPLOAD_DIR）。
+ * 自包含：临时目录放隔离 DATA_DIR/UPLOAD_DIR，探测空闲端口后自行拉起 server.js，
+ * 跑完杀实例并删除临时目录，不污染真实 data/、不占用固定端口。
+ * 用法：node scripts/ui-test.js（或随 npm test 一并运行）。
  */
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
+const net = require('net');
 const path = require('path');
+const { spawn } = require('child_process');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
-const BASE = process.env.UI_BASE || 'http://127.0.0.1:12345';
+// 脚本为自己拉起测试实例：临时目录（跑完即删）+ 空闲端口，凭据走环境变量覆盖
+const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'taskassign-ui-'));
 const PUBLIC = path.join(__dirname, '..', 'public');
 const ADMIN_PASSWORD = process.env.UI_ADMIN_PASSWORD || 'AdminTest123';
 const DEMO_PASSWORD = process.env.UI_DEMO_PASSWORD || 'DemoTest123';
+// 测试进程选择「test」环境：父进程随后会直接打开临时库（灌批量数据验证导出截断），
+// 若不显式固定 NODE_ENV，外层 shell 的 NODE_ENV=production 会让 auth 生产 fail-closed
+// 或 db 的演示账号拒绝逻辑在父进程启动时直接退出（评审 P2）。
+process.env.NODE_ENV = 'test';
+process.env.DATA_DIR = path.join(TEST_ROOT, 'data');
+process.env.UPLOAD_DIR = path.join(TEST_ROOT, 'uploads');
+process.env.ADMIN_PASSWORD = ADMIN_PASSWORD;
+process.env.ENABLE_DEMO_ACCOUNTS = '1';
+process.env.DEMO_PASSWORD = DEMO_PASSWORD;
+const { db } = require('../src/db');
+let PORT;
+let BASE;
+let server;
+let serverOutput = '';
 
 let pass = 0;
 let failed = 0;
@@ -142,6 +161,12 @@ function buildHtml(pageFile, scripts) {
   let html = fs.readFileSync(path.join(PUBLIC, pageFile), 'utf8');
   // 去掉外链脚本，改为内联真实脚本内容（保持依赖顺序）
   html = html.replace(/<script src="\/js\/[^"]+"[^>]*><\/script>/g, '');
+  // 外链样式同样内联成 <style>：jsdom 不加载外部资源（未开启 resources: usable），
+  // 不内联 CSS 就无法证明「样式外置后 .hidden 等类真正生效」——只断言类名是空洞的。
+  html = html.replace(
+    /<link rel="stylesheet" href="\/css\/([A-Za-z0-9_.-]+)(?:\?[^"']*)?">/g,
+    (match, file) => `<style>\n${fs.readFileSync(path.join(PUBLIC, 'css', file), 'utf8')}\n</style>`
+  );
   const inline = scripts.map((name) => fs.readFileSync(path.join(PUBLIC, 'js', name), 'utf8')).join('\n;\n');
   // 合并为单个 <script> 块：jsdom 不共享跨 <script> 标签的顶层 const/let 作用域，
   // 分开内联会导致「Identifier '$' has already been declared」；用函数替换器避免 $$ 被正则折叠为 $。
@@ -172,6 +197,9 @@ function newDom(html, jar, { url }) {
       window.XMLHttpRequest = makeXHR(jar);
       if (!window.AbortController) window.AbortController = AbortController;
       if (!window.CSS) window.CSS = { escape: (s) => String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&') };
+      // jsdom 未实现 URL.createObjectURL：导出的 blob 下载依赖它，补最小桩
+      if (!window.URL.createObjectURL) window.URL.createObjectURL = () => 'blob:jsdom-test';
+      if (!window.URL.revokeObjectURL) window.URL.revokeObjectURL = () => {};
       // 记录导航触发标记（jsdom 下 location.href 赋值会触发 Not implemented 导航错误）
       window.__navigatedTo = null;
     },
@@ -194,6 +222,64 @@ function waitFor(fn, { timeout = 8000, interval = 50 } = {}) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ---------------- 测试实例启停（与 e2e-test.js 同一模式） ---------------- */
+
+async function findFreePort(startPort) {
+  for (let port = startPort; port < startPort + 200; port++) {
+    const free = await new Promise((resolve) => {
+      const probe = net.createServer();
+      probe.unref();
+      probe.once('error', () => resolve(false));
+      probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(true)));
+    });
+    if (free) return port;
+  }
+  throw new Error(`从 ${startPort} 起连续 200 个端口均被占用，无法启动测试服务`);
+}
+
+async function startServer() {
+  server = spawn(process.execPath, ['server.js'], {
+    cwd: path.join(__dirname, '..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      HOST: '127.0.0.1',
+      PORT: String(PORT),
+      DATA_DIR: path.join(TEST_ROOT, 'data'),
+      UPLOAD_DIR: path.join(TEST_ROOT, 'uploads'),
+      ADMIN_PASSWORD,
+      ENABLE_DEMO_ACCOUNTS: '1',
+      DEMO_PASSWORD,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  server.stdout.on('data', (chunk) => { serverOutput += chunk; });
+  server.stderr.on('data', (chunk) => { serverOutput += chunk; });
+  // 轮询静态资源直至响应 200：比等启动横幅更稳，也能把提前退出尽早暴露成可读错误
+  for (let i = 0; i < 60; i++) {
+    if (server.exitCode !== null) throw new Error(`测试服务提前退出\n${serverOutput}`);
+    try {
+      const response = await fetch(`${BASE}/index.html`);
+      if (response.ok) return;
+    } catch {
+      // 服务尚未启动，继续等
+    }
+    await sleep(100);
+  }
+  throw new Error(`测试服务启动超时\n${serverOutput}`);
+}
+
+async function stopServer() {
+  if (server && server.exitCode === null) {
+    server.kill();
+    await new Promise((resolve) => server.once('exit', resolve));
+  }
+  // 父进程为灌批量数据也打开了临时库：先关连接否则 Windows 下句柄占用导致删目录 EPERM
+  // （与 task-security-regression.js 收尾同模式）
+  try { db.close(); } catch { /* 未打开或已关闭则忽略 */ }
+  fs.rmSync(TEST_ROOT, { recursive: true, force: true });
+}
 
 /* ---------------- 测试 ---------------- */
 
@@ -250,7 +336,14 @@ async function testWorkbenchAndCreateTask() {
   }, { timeout: 10000 });
   ok(doc.querySelector('#uName').textContent === '系统管理员', '工作台渲染当前用户姓名');
   ok(doc.querySelector('#uRole').textContent === '管理员', '渲染用户角色');
-  ok(doc.querySelector('#navUsers').style.display !== 'none', '管理员可见「用户管理」入口');
+  // 显隐已从 style 属性改为 hidden 工具类（CSP 禁止内联 style，安全评审 M4）
+  ok(!doc.querySelector('#navUsers').classList.contains('hidden'), '管理员可见「用户管理」入口');
+  // 外置样式已随 buildHtml 内联进测试 DOM：断言 computed style 而非只查类名，
+  // 证明 .hidden 工具类在样式外置（CSP style-src 'self'）的前提下真的把元素隐藏
+  const navUsersStyle = window.getComputedStyle(doc.querySelector('#navUsers'));
+  ok(navUsersStyle.display !== 'none', '管理员「用户管理」入口 CSS 计算可见', navUsersStyle.display);
+  const usersViewStyle = window.getComputedStyle(doc.querySelector('#view-users'));
+  ok(usersViewStyle.display === 'none', '未激活的视图被 .hidden 工具类实际隐藏', usersViewStyle.display);
 
   // 统计卡片渲染
   await waitFor(() => doc.querySelector('#statGrid').children.length > 0, { timeout: 8000 });
@@ -314,7 +407,12 @@ async function testExecutorPublishTask() {
   const { window } = dom;
   const doc = window.document;
   await waitFor(() => doc.querySelector('#uRole').textContent === '任务执行者', { timeout: 10000 });
-  ok(doc.querySelector('#btnNewTask').style.display !== 'none', '执行者可见「发布新任务」入口');
+  ok(!doc.querySelector('#btnNewTask').classList.contains('hidden'), '执行者可见「发布新任务」入口');
+  // 同一套 CSS 断言：执行者的「用户管理」入口应是类与 computed style 双隐藏
+  ok(window.getComputedStyle(doc.querySelector('#navUsers')).display === 'none',
+    '执行者不可见「用户管理」入口（hidden 类 + CSS 计算一致）');
+  ok(window.getComputedStyle(doc.querySelector('#btnNewTask')).display !== 'none',
+    '执行者「发布新任务」按钮 CSS 计算可见');
   await waitFor(() => doc.querySelector('#tfAssignee').options.length > 1, { timeout: 8000 });
   const options = Array.from(doc.querySelector('#tfAssignee').options);
   const executorOption = options.find((option) => option.dataset.role === 'executor');
@@ -331,7 +429,8 @@ async function testExecutorPublishTask() {
   ok(exportSelect.disabled === false, '执行者的导出接收人筛选可用');
   ok(Array.from(exportSelect.options).some((option) => option.value === assignerOption.value),
     '执行者导出筛选包含分配者接收人');
-  closeModal('#exportModal');
+  // closeModal 是 jsdom 窗口内的全局函数，需经 window 引用（Node 侧不存在）
+  dom.window.closeModal('#exportModal');
 
   doc.querySelector('#btnNewTask').click();
   const title = '执行者UI发布任务_' + Date.now();
@@ -377,21 +476,72 @@ async function testScreenPage() {
     body: JSON.stringify({ username: 'admin', password: ADMIN_PASSWORD }),
   });
   jar.setFromResponse(loginRes);
-  const screenHtml = fs.readFileSync(path.join(PUBLIC, 'screen.html'), 'utf8');
-  const dom = newDom(screenHtml, jar, { url: BASE + '/screen.html' });
+  // 用 buildHtml 内联 theme.js/screen.js 与 style.css/screen.css：此前直接喂原始
+  // screen.html，外链脚本与 CSS 都不会被 jsdom 加载，原「渲染统计信息」断言
+  // 命中的其实是静态 HTML 里的字符串，screen.css 从未被验证（评审 P2）。
+  const html = buildHtml('screen.html', ['theme.js', 'screen.js']);
+  const dom = newDom(html, jar, { url: BASE + '/screen.html' });
   const { window } = dom;
   const doc = window.document;
   ok(doc.body.textContent.includes('所有角色任务分布'), '大屏显示所有角色任务分布标题');
-  // screen.js 异步拉取 /api/screen 并渲染；等待渲染出内容
-  try {
-    await waitFor(() => {
-      const el = doc.querySelector('#screenRoot') || doc.querySelector('[data-screen]') || doc.body;
-      return el && /总任务|执行中|已完成/.test(el.textContent || '');
-    }, { timeout: 10000 });
-    ok(true, '数据大屏页面加载并渲染统计信息');
-  } catch {
-    ok(false, '数据大屏页面渲染超时');
-  }
+  // screen.css 已内联为 <style>：验证样式表真实载入（.screen 规则存在）
+  const hasScreenCss = Array.from(doc.styleSheets).some((sheet) =>
+    Array.from(sheet.cssRules || []).some((rule) => rule.selectorText === '.screen')
+  );
+  ok(hasScreenCss, '外置样式 screen.css 已内联加载（.screen 规则存在）');
+  // screen.js 通过桥接 fetch 真实拉取 /api/screen 渲染 KPI 与列表计数
+  await waitFor(() => doc.querySelector('#kpis').children.length > 0, { timeout: 10000 });
+  ok(true, '数据大屏页面加载并渲染统计信息');
+  const runCount = doc.querySelector('#cntRun').textContent;
+  ok(/^\d+ 条$/.test(runCount), '大屏渲染「执行中」列表计数', String(runCount));
+  dom.window.close();
+}
+
+async function testExportFlow() {
+  console.log('\n【UI-7】导出 CSV（fetch 下载 + 截断提示）');
+  const jar = makeJar();
+  const loginRes = await fetch(BASE + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: ADMIN_PASSWORD }),
+  });
+  jar.setFromResponse(loginRes);
+  const html = buildHtml('index.html', ['util.js', 'modal.js', 'due-picker.js', 'task-actions.js', 'users.js', 'app.js']);
+  const dom = newDom(html, jar, { url: BASE + '/index.html' });
+  const { window } = dom;
+  const doc = window.document;
+  await waitFor(() => {
+    const u = doc.querySelector('#uName');
+    return u && u.textContent && u.textContent !== '-';
+  }, { timeout: 10000 });
+
+  // 路径一：常规导出（任务量小）→ fetch + blob 下载，提示「已开始导出」
+  doc.querySelector('#btnExport').click();
+  await sleep(50);
+  doc.querySelector('#btnDoExport').click();
+  await waitFor(() => /导出/.test(doc.querySelector('#toast').textContent || ''), { timeout: 10000 });
+  ok(doc.querySelector('#toast').textContent.includes('已开始导出'),
+    '常规导出走 fetch + blob 下载并提示成功', doc.querySelector('#toast').textContent);
+  ok(!doc.querySelector('#exportModal').classList.contains('show'), '导出后弹窗关闭');
+
+  // 路径二：超过 10000 行 → 服务端只下发部分数据，页面必须据 X-Export-Truncated
+  // 明确提示可能截断（评审 P1），用户不能再拿到不完整文件却不知情。
+  // 数据直接灌进本测试的隔离临时库，不影响真实 data/。
+  const adminId = db.prepare('SELECT id FROM users WHERE username = ?').get('admin').id;
+  const bulkTs = new Date().toISOString();
+  db.prepare('BEGIN').run();
+  const insert = db.prepare(
+    'INSERT INTO tasks (title, description, category, priority, status, creator_id, assignee_id, created_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  );
+  for (let i = 0; i < 10001; i++) insert.run(`导出上限测试_${i}`, '', '批量测试', 'normal', 'in_progress', adminId, adminId, bulkTs);
+  db.prepare('COMMIT').run();
+
+  doc.querySelector('#btnExport').click();
+  await sleep(50);
+  doc.querySelector('#btnDoExport').click();
+  await waitFor(() => /上限/.test(doc.querySelector('#toast').textContent || ''), { timeout: 15000 });
+  ok(doc.querySelector('#toast').textContent.includes('上限'),
+    '超过 10000 行时导出提示可能被截断（读取 X-Export-Truncated）', doc.querySelector('#toast').textContent);
   dom.window.close();
 }
 
@@ -442,17 +592,23 @@ async function testTaskModalOutsideClick() {
 }
 
 (async () => {
-  console.log('UI 端到端测试（目标：' + BASE + '，隔离实例，不影响生产）\n');
+  PORT = await findFreePort(32000 + (process.pid % 1000));
+  BASE = `http://127.0.0.1:${PORT}`;
+  console.log(`UI 端到端测试（实例：${BASE}，隔离实例，跑完自动清理）\n`);
   try {
+    await startServer();
     await testLoginPage();
     await testWorkbenchAndCreateTask();
     await testExecutorPublishTask();
     await testAuthGuard();
     await testScreenPage();
     await testTaskModalOutsideClick();
+    await testExportFlow();
   } catch (e) {
     failed++;
     console.error('  [异常]', e.message);
+  } finally {
+    await stopServer();
   }
   console.log(`\n${'='.repeat(46)}\n  UI 测试通过 ${pass} 项，失败 ${failed} 项\n${'='.repeat(46)}\n`);
   process.exitCode = failed ? 1 : 0;

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>工作台 · 任务分配系统</title>
 <script src="/js/theme.js?v=20260828-1"></script>
-<link rel="stylesheet" href="/css/style.css?v=20260828-1">
+<link rel="stylesheet" href="/css/style.css?v=20260831-1">
 </head>
 <body>
 
@@ -14,7 +14,7 @@
   <nav class="nav">
     <a href="#" data-view="tasks" class="active">任务中心</a>
     <a href="#" data-view="responsibilities">岗位分工</a>
-    <a href="#" data-view="users" id="navUsers" style="display:none">用户管理</a>
+    <a href="#" data-view="users" id="navUsers" class="hidden">用户管理</a>
     <a href="/screen.html" target="_blank">数据大屏 ↗</a>
   </nav>
   <div class="spacer"></div>
@@ -38,7 +38,7 @@
       <span class="desc" id="scopeDesc"></span>
       <div class="spacer"></div>
       <button class="btn ghost" id="btnExport">导出任务清单</button>
-      <button class="btn" id="btnNewTask" style="display:none">＋ 发布新任务</button>
+      <button class="btn hidden" id="btnNewTask">＋ 发布新任务</button>
     </div>
 
     <div class="completion-notice" id="completionNotice" hidden>
@@ -66,15 +66,15 @@
     <div class="panel">
       <div class="panel-head">
         <h3>任务列表</h3>
-        <span class="desc" id="taskCount" style="color:var(--text-mute);font-size:13px"></span>
-        <button class="btn danger sm" id="btnBatchDel" style="display:none;margin-left:auto">删除选中（<b id="selCount">0</b>）</button>
+        <span class="desc t-mute fs-13" id="taskCount"></span>
+        <button class="btn danger sm hidden ml-auto" id="btnBatchDel">删除选中（<b id="selCount">0</b>）</button>
       </div>
       <div id="taskTableWrap"></div>
     </div>
   </section>
 
   <!-- ============ 岗位分工 ============ -->
-  <section id="view-responsibilities" style="display:none">
+  <section id="view-responsibilities" class="hidden">
     <div class="page-head">
       <h2>执行者岗位分工</h2>
       <span class="desc" id="responsibilityDesc">查看每位执行者负责的岗位职责</span>
@@ -83,7 +83,7 @@
   </section>
 
   <!-- ============ 用户管理 ============ -->
-  <section id="view-users" style="display:none">
+  <section id="view-users" class="hidden">
     <div class="page-head">
       <h2>用户管理</h2>
       <span class="desc">管理员可创建账号并分配角色</span>
@@ -191,7 +191,7 @@
 
 <!-- ============ 岗位职责编辑弹窗 ============ -->
 <div class="modal-mask" id="responsibilityModal" aria-hidden="true">
-  <div class="modal" style="max-width:560px" role="dialog" aria-modal="true" aria-labelledby="responsibilityModalTitle">
+  <div class="modal mw-560" role="dialog" aria-modal="true" aria-labelledby="responsibilityModalTitle">
     <div class="modal-head"><h3 id="responsibilityModalTitle">编辑岗位职责</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
       <input type="hidden" id="responsibilityUserId">
@@ -272,7 +272,7 @@
 
 <!-- ============ 完成任务弹窗 ============ -->
 <div class="modal-mask" id="doneModal" aria-hidden="true">
-  <div class="modal" style="max-width:480px" role="dialog" aria-modal="true" aria-labelledby="doneModalTitle">
+  <div class="modal mw-480" role="dialog" aria-modal="true" aria-labelledby="doneModalTitle">
     <div class="modal-head"><h3 id="doneModalTitle">标记任务执行完成</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
       <div id="doneTaskInfo" class="done-task-info"></div>
@@ -304,7 +304,7 @@
 
 <!-- ============ 退回任务弹窗 ============ -->
 <div class="modal-mask" id="returnModal" aria-hidden="true">
-  <div class="modal" style="max-width:480px" role="dialog" aria-modal="true" aria-labelledby="returnModalTitle">
+  <div class="modal mw-480" role="dialog" aria-modal="true" aria-labelledby="returnModalTitle">
     <div class="modal-head"><h3 id="returnModalTitle">退回任务</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
       <div id="returnTaskInfo" class="done-task-info"></div>
@@ -323,7 +323,7 @@
 
 <!-- ============ 改密码弹窗 ============ -->
 <div class="modal-mask" id="pwdModal" aria-hidden="true">
-  <div class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="pwdModalTitle">
+  <div class="modal mw-420" role="dialog" aria-modal="true" aria-labelledby="pwdModalTitle">
     <div class="modal-head"><h3 id="pwdModalTitle">修改密码</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
       <div class="field"><label for="pwOld">原密码</label><input class="input" id="pwOld" type="password"></div>
@@ -338,7 +338,7 @@
 
 <!-- ============ 导出弹窗 ============ -->
 <div class="modal-mask" id="exportModal" aria-hidden="true">
-  <div class="modal" style="max-width:460px" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
+  <div class="modal mw-460" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
     <div class="modal-head"><h3 id="exportModalTitle">导出任务清单</h3><button class="x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">
       <div class="field">
@@ -365,7 +365,7 @@
 
 <!-- ============ 统一确认弹窗 ============ -->
 <div class="modal-mask" id="confirmModal" aria-hidden="true">
-  <div class="modal" style="max-width:440px" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+  <div class="modal mw-440" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
     <div class="modal-head">
       <h3 id="confirmTitle">请确认</h3>
       <button class="x" data-close aria-label="关闭">&times;</button>
@@ -384,8 +384,8 @@
 <script src="/js/util.js?v=20260825-1"></script>
 <script src="/js/modal.js?v=20260825-1"></script>
 <script src="/js/due-picker.js?v=20260825-1"></script>
-<script src="/js/task-actions.js?v=20260825-1"></script>
-<script src="/js/users.js?v=20260828-1"></script>
-<script src="/js/app.js?v=20260828-1"></script>
+<script src="/js/task-actions.js?v=20260831-1"></script>
+<script src="/js/users.js?v=20260831-1"></script>
+<script src="/js/app.js?v=20260831-1"></script>
 </body>
 </html>
