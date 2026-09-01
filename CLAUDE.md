@@ -39,6 +39,7 @@ node scripts/seed-demo.js  # 向当前数据库灌入演示任务数据
   - `userRoutes.js` → `/api/users`（用户管理，含执行者岗位职责 responsibilities）
   - `taskRoutes.js` → `/api/tasks`（核心：任务 CRUD、完成申请/退回流程、附件上传下载；multer 限制 50MB×10 个、扩展名白名单，拒绝 SVG/exe 等）
   - `statsRoutes.js` → `/api/screen`、`/api/overview`、`/api/export`（CSV 导出）
+- 读取和写入限流均按“用户 × 端点”使用独立滑动窗口 bucket；被拒绝的请求不计数，过期时间戳由定期清理回收。各 bucket 的阈值在对应路由文件中定义；限流状态 Map 总 key 数上限为 10,000（不是用户数上限，多端点会分别占用 key）。
 - 数据可见性：admin 全量；assigner/executor 只能看自己创建或承接的任务。完成流程为 executor 提交 completion-request → assigner 确认（确认前任务仍是 in_progress），可退回（return）给执行者。注意例外：数据大屏 `/api/screen` 是刻意的全局视图，所有已登录角色看到相同的汇总与明细（评审 L1 记录的有意决策，不是越权缺陷）。
 
 ### 前端（public/，无构建、无框架）

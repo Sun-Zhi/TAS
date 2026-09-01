@@ -214,16 +214,13 @@ router.post('/login', async (req, res, next) => {
     // 会话令牌只经 HttpOnly Cookie 下发，不放进 JS 可读的响应体（安全评审 M2）：
     // 避免 XSS/恶意扩展/前端错误上报把长效令牌带出浏览器；需要令牌的回归测试
     // 改从 Set-Cookie 解析，前端本就完全依赖 Cookie。
-    // 兼容非浏览器 CLI/API 客户端：请求显式携带 x-return-token: 1/true/yes 时，
-    // 才把令牌随响应体返回（M2 的显式豁免，浏览器不发送该头，行为不变）。
+    // 曾存在 x-return-token: 1/true/yes 时随响应体回传令牌的豁免（安全评审 S1）：
+    // 无环境约束、生产同样生效，等于给 M2 留了一条「日后加宽松 CORS 即整体绕过」
+    // 的后门，且全仓库无调用方——已移除。非浏览器 CLI/API 客户端请改用
+    // x-auth-token 头（auth.js 原生支持）。
     const body = {
       user: { id: user.id, username: user.username, name: user.name, role: user.role, dept: user.dept },
     };
-    const wantToken = String(req.headers['x-return-token'] || '').toLowerCase();
-    if (wantToken === '1' || wantToken === 'true' || wantToken === 'yes') {
-      body.token = token;
-      body.expires = expires;
-    }
     res.json(body);
     // 旧格式哈希（N=16384）登录成功后自动升级为高强度新格式，无需用户改密。
     // 必须放在 res.json 之后异步执行：同步升级（~400ms）会阻塞事件循环，

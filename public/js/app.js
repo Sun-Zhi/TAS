@@ -7,12 +7,17 @@
 /* ---------------- 初始化 ---------------- */
 
 async function init() {
+  let authData;
   try {
-    const { user } = await api('/api/auth/me');
-    state.me = user;
-  } catch { location.href = '/login.html'; return; }
-
-  const me = state.me;
+    authData = await api('/api/auth/me');
+  } catch (error) {
+    // 只有认证失败才结束初始化；网络或服务端故障交给外层统一提示。
+    if (isAuthRedirectError(error)) return;
+    throw error;
+  }
+  const { user } = authData;
+  state.me = user;
+  const me = user;
   $('#uName').textContent = me.name;
   $('#uRole').textContent = ROLE_TEXT[me.role];
   $('#uAvatar').textContent = me.name.slice(0, 1);
@@ -28,8 +33,16 @@ async function init() {
   }
   $('#btnNewTask').classList.remove('hidden');
 
-  await loadAssigneeOptions();
-  await loadCategories();
+  await loadAssigneeOptions().catch((error) => {
+    if (isAuthRedirectError(error)) return;
+    console.error('任务接收人加载失败', error);
+    toast('任务接收人加载失败，部分筛选功能暂不可用', 'err');
+  });
+  await loadCategories().catch((error) => {
+    if (isAuthRedirectError(error)) return;
+    console.error('任务类别加载失败', error);
+    toast('任务类别加载失败，部分筛选功能暂不可用', 'err');
+  });
   await refresh();
   initDuePicker();
 }
@@ -75,7 +88,16 @@ async function loadAssigneeOptions() {
 }
 
 async function refresh() {
-  await Promise.all([loadStats(), loadTasks()]);
+  const results = await Promise.allSettled([loadStats(), loadTasks()]);
+  if (results[0].status === 'rejected' && !isAuthRedirectError(results[0].reason)) {
+    console.error('统计数据加载失败', results[0].reason);
+    toast('统计数据加载失败，任务列表仍可使用', 'err');
+  }
+  if (results[1].status === 'rejected' && !isAuthRedirectError(results[1].reason)) {
+    console.error('任务列表加载失败', results[1].reason);
+    toast('任务列表加载失败，请稍后重试', 'err');
+  }
+  return results;
 }
 
 async function loadStats() {
@@ -99,11 +121,22 @@ const TASKS_PAGE_SIZE = 200;
 // 请求序号：追加请求在途时若发生重置（切筛选/搜索/自动刷新），
 // 旧响应按序号丢弃，避免旧筛选数据混入新列表、页码错乱
 let tasksLoadSeq = 0;
+function snapshotTaskState() {
+  return {
+    tasks: state.tasks,
+    taskTotal: state.taskTotal,
+    taskHasMore: state.taskHasMore,
+    tasksPage: state.tasksPage,
+  };
+}
+let lastTasksSnapshot = snapshotTaskState();
 
 async function loadTasks({ reset = true } = {}) {
   // reset=false 为「加载更多」追加模式：翻页期间防重入
   if (!reset && state.loadingMore) return;
   const seq = ++tasksLoadSeq;
+  // 只有 reset 分支的 catch 会用到 previous（用于失败回滚），追加模式不需要
+  const previous = reset ? lastTasksSnapshot : null;
   if (reset) {
     state.tasks = [];
     state.taskTotal = 0;
@@ -124,7 +157,18 @@ async function loadTasks({ reset = true } = {}) {
     state.taskTotal = Number.isFinite(total) ? total : tasks.length;
     state.tasksPage += 1;
     state.taskHasMore = Boolean(result.pagination && result.pagination.has_more);
+    lastTasksSnapshot = snapshotTaskState();
     renderTasks();
+  } catch (error) {
+    if (seq === tasksLoadSeq && reset) {
+      state.tasks = previous.tasks;
+      state.taskTotal = previous.taskTotal;
+      state.taskHasMore = previous.taskHasMore;
+      state.tasksPage = previous.tasksPage;
+      lastTasksSnapshot = previous;
+      renderTasks();
+    }
+    throw error;
   } finally {
     // 只有最新一轮请求负责复位防重入标志
     if (seq === tasksLoadSeq) state.loadingMore = false;
@@ -591,7 +635,16 @@ $('#btnDoExport').addEventListener('click', () => {
   fetch('/api/export?' + p.toString(), { credentials: 'same-origin' })
     .then(async (res) => {
       if (res.status === 401) { location.href = '/login.html'; return; }
-      if (!res.ok) throw new Error('导出失败，请稍后重试');
+      if (!res.ok) {
+        // 服务端错误带中文 error 字段（如 429「导出过于频繁」），透传给用户；
+        // 统一抛「导出失败」会把真正原因吞掉，用户对着「稍后重试」重试只会再次被限流
+        let message = '导出失败，请稍后重试';
+        try {
+          const err = await res.json();
+          if (err && typeof err.error === 'string' && err.error) message = err.error;
+        } catch (_) { /* 非 JSON 错误体（网关/静态错误页），保留默认文案 */ }
+        throw new Error(message);
+      }
       const truncated = res.headers.get('X-Export-Truncated');
       const disposition = res.headers.get('Content-Disposition') || '';
       const nameMatch = disposition.match(/filename\*=UTF-8''([^;]+)/);
@@ -607,7 +660,7 @@ $('#btnDoExport').addEventListener('click', () => {
       if (truncated) {
         toast(`导出行数已达上限 ${truncated} 行，结果可能不完整，请缩小筛选范围后重试`, 'err');
       } else {
-        toast('已开始导出', 'ok');
+        toast('导出已完成', 'ok');
       }
     })
     .catch((e) => toast(e.message || '导出失败，请稍后重试', 'err'));

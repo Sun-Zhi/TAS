@@ -195,7 +195,8 @@ function newDom(html, jar, { url }) {
     beforeParse(window) {
       window.fetch = makeFetch(jar);
       window.XMLHttpRequest = makeXHR(jar);
-      if (!window.AbortController) window.AbortController = AbortController;
+      // 使用 Node 的 AbortController，使测试桥接的 Node fetch 能识别 api() 传入的 signal。
+      window.AbortController = AbortController;
       if (!window.CSS) window.CSS = { escape: (s) => String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&') };
       // jsdom 未实现 URL.createObjectURL：导出的 blob 下载依赖它，补最小桩
       if (!window.URL.createObjectURL) window.URL.createObjectURL = () => 'blob:jsdom-test';
@@ -514,12 +515,12 @@ async function testExportFlow() {
     return u && u.textContent && u.textContent !== '-';
   }, { timeout: 10000 });
 
-  // 路径一：常规导出（任务量小）→ fetch + blob 下载，提示「已开始导出」
+  // 路径一：常规导出（任务量小）→ fetch + blob 下载，提示「导出已完成」
   doc.querySelector('#btnExport').click();
   await sleep(50);
   doc.querySelector('#btnDoExport').click();
   await waitFor(() => /导出/.test(doc.querySelector('#toast').textContent || ''), { timeout: 10000 });
-  ok(doc.querySelector('#toast').textContent.includes('已开始导出'),
+  ok(doc.querySelector('#toast').textContent.includes('导出已完成'),
     '常规导出走 fetch + blob 下载并提示成功', doc.querySelector('#toast').textContent);
   ok(!doc.querySelector('#exportModal').classList.contains('show'), '导出后弹窗关闭');
 
@@ -542,6 +543,27 @@ async function testExportFlow() {
   await waitFor(() => /上限/.test(doc.querySelector('#toast').textContent || ''), { timeout: 15000 });
   ok(doc.querySelector('#toast').textContent.includes('上限'),
     '超过 10000 行时导出提示可能被截断（读取 X-Export-Truncated）', doc.querySelector('#toast').textContent);
+
+  // 路径三：触发 429 后必须透传服务端的中文原因（评审 C2），而不是统一的
+  // 「导出失败，请稍后重试」——用户需要知道是「导出过于频繁」。
+  // export 桶本次已消耗 2 次（路径一/二），出现 429 后立即停止，避免慢环境中
+  // 前面的请求滑出 60 秒窗口导致测试不稳定，也避免无谓的大 CSV 响应。
+  let sawExportRateLimit = false;
+  for (let i = 0; i < 10; i++) {
+    const response = await fetch(`${BASE}/api/export`, { headers: { Cookie: jar.header() } });
+    await response.arrayBuffer();
+    if (response.status === 429) {
+      sawExportRateLimit = true;
+      break;
+    }
+  }
+  ok(sawExportRateLimit, '导出突发请求触发 429 限流');
+  doc.querySelector('#btnExport').click();
+  await sleep(50);
+  doc.querySelector('#btnDoExport').click();
+  await waitFor(() => /频繁/.test(doc.querySelector('#toast').textContent || ''), { timeout: 10000 });
+  ok(doc.querySelector('#toast').textContent.includes('过于频繁'),
+    '导出触发限流时透传服务端 error 文案（C2）', doc.querySelector('#toast').textContent);
   dom.window.close();
 }
 

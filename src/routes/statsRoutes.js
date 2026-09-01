@@ -10,26 +10,32 @@ const router = express.Router();
 const { BASE_SELECT, scopeClause, decorate, userRateLimited } = taskRoutes;
 
 // 读取侧限流（安全评审 M3）：大屏页面 10 秒轮询（约 6 次/分钟/客户端），
-// 阈值留出多块大屏并存的余量；导出为低频人工操作，阈值更低。
-const SCREEN_MAX_PER_MIN = 30;
+// 阈值 60 恰好支撑 10 块屏并存；更多屏幕会让部分轮询间歇性 429
+// （滑窗会自愈：被拒不计数、旧计数随时间溢出，前端对 429 指数退避后恢复），
+// 这不是"留出余量"——任何固定阈值都是如此，超限表现为偶发失败而非不可用。
+// 导出为低频人工操作，阈值更低。
+const SCREEN_MAX_PER_MIN = 60;
 const EXPORT_MAX_PER_MIN = 10;
+// 工作台统计只随页面加载/手动操作触发，独立 bucket，避免与大屏共享配额
+const OVERVIEW_MAX_PER_MIN = 30;
 // 导出单次最大行数：与任务列表的 LIMIT 同思路，约束管理员全量导出的
 // 内存放大（全库逐行构造 CSV），正常团队任务量远低于该值。
 const EXPORT_MAX_ROWS = 10000;
 
-function limitScreenRead(req, res, next) {
-  if (userRateLimited(req.user.id, SCREEN_MAX_PER_MIN, 'screen')) {
-    return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
-  }
-  next();
+// 读取侧限流中间件工厂：三个只读端点（大屏/导出/工作台统计）阈值与提示语不同，
+// 但都是「按用户×bucket 判定 → 超限 429」这同一套逻辑，避免逐个复制。
+function rateLimitMiddleware(maxPerMin, bucket, message) {
+  return function (req, res, next) {
+    if (userRateLimited(req.user.id, maxPerMin, bucket)) {
+      return res.status(429).json({ error: message });
+    }
+    next();
+  };
 }
 
-function limitExport(req, res, next) {
-  if (userRateLimited(req.user.id, EXPORT_MAX_PER_MIN, 'export')) {
-    return res.status(429).json({ error: '导出过于频繁，请稍后再试' });
-  }
-  next();
-}
+const limitScreenRead = rateLimitMiddleware(SCREEN_MAX_PER_MIN, 'screen', '请求过于频繁，请稍后再试');
+const limitExport = rateLimitMiddleware(EXPORT_MAX_PER_MIN, 'export', '导出过于频繁，请稍后再试');
+const limitOverviewRead = rateLimitMiddleware(OVERVIEW_MAX_PER_MIN, 'overview', '请求过于频繁，请稍后再试');
 
 // 大屏看板只需要展示字段；不含 return_reason——退回理由是内部评价文本，
 // 大屏不渲染它，任何登录角色都不应通过 /api/screen 读到全量理由（安全评审 M1）。
@@ -188,7 +194,7 @@ router.get('/screen', requireLogin, limitScreenRead, (req, res) => {
 
 /* ---------------- 个人工作台统计 ---------------- */
 
-router.get('/overview', requireLogin, (req, res) => {
+router.get('/overview', requireLogin, limitOverviewRead, (req, res) => {
   const sc = scopeClause(req.user);
   const now = new Date().toISOString();
   const row = db.prepare(`

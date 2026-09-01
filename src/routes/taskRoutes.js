@@ -110,9 +110,9 @@ function limitAttachmentUpload(req, res, next) {
 setInterval(() => {
   const now = Date.now();
   const cutoff = now - RATE_LIMIT_WINDOW_MS;
-  for (const [userId, timestamps] of rateLimitStates) {
+  for (const [key, timestamps] of rateLimitStates) {
     while (timestamps.length && timestamps[0] <= cutoff) timestamps.shift();
-    if (!timestamps.length) rateLimitStates.delete(userId);
+    if (!timestamps.length) rateLimitStates.delete(key);
   }
 }, 5 * 60 * 1000).unref();
 

@@ -47,8 +47,8 @@ function ok(cond, label, extra = '') {
   throw new Error(`断言失败：${label}${extra ? `（${extra}）` : ''}`);
 }
 
-async function req(path, { method = 'GET', token, body, raw } = {}) {
-  const headers = {};
+async function req(path, { method = 'GET', token, body, raw, headers: extraHeaders } = {}) {
+  const headers = { ...(extraHeaders || {}) };
   if (token) headers['x-auth-token'] = token;
   if (body && !(body instanceof FormData)) headers['Content-Type'] = 'application/json';
   const res = await fetch(BASE + path, {
@@ -124,8 +124,11 @@ async function stopServer() {
   const dev = await login('dev01', DEMO_PASSWORD);
   ok(admin && pm && dev, '三种角色均可登录');
   // 安全评审 M2：登录响应体不再回传会话令牌（只经 HttpOnly Cookie 下发）
-  const m2Probe = await req('/api/auth/login', { method: 'POST', body: { username: 'dev01', password: DEMO_PASSWORD } });
-  ok(m2Probe.status === 200 && m2Probe.data.token === undefined, '登录响应体不回传会话 token（M2）');
+  const m2Probe = await req('/api/auth/login', {
+    method: 'POST', body: { username: 'dev01', password: DEMO_PASSWORD },
+    headers: { 'x-return-token': '1' },
+  });
+  ok(m2Probe.status === 200 && m2Probe.data.token === undefined, '登录响应体不回传会话 token（M2，含历史回传头）');
   const bad = await req('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } });
   ok(bad.status === 401, '错误密码被拒绝');
   const lockStatuses = [];
@@ -437,13 +440,14 @@ async function stopServer() {
   // 断言与 humanDuration 输出格式一致（如「0分」「1小时5分」「2天3小时15分」），
   // 而非仅 != '-'，确保平均耗时计算真实产出可读时长
   ok(/^(\d+天)?(\d+小时)?\d+分$/.test(scr.data.summary.avg_duration_text), `平均耗时：${scr.data.summary.avg_duration_text}`);
-  // 安全评审 M3：大屏读取限流 30 次/分钟，按用户×端点独立计数（bucket 隔离）。
-  // screen 桶此前仅被本节消耗 1 次，突发请求直至首次 429。
+  // 安全评审 M3：大屏读取限流 60 次/分钟（评审 C1：30 只够 5 块屏，余量不足），
+  // 按用户×端点独立计数（bucket 隔离）。screen 桶此前仅被本节消耗 1 次，
+  // 突发请求直至首次 429（循环上限 75，足够越过 60 阈值）。
   const screenStatuses = [];
-  for (let i = 0; i < 35 && !screenStatuses.includes(429); i++) {
+  for (let i = 0; i < 75 && !screenStatuses.includes(429); i++) {
     screenStatuses.push((await req('/api/screen', { token: admin })).status);
   }
-  ok(screenStatuses.length < 35 && screenStatuses[screenStatuses.length - 1] === 429,
+  ok(screenStatuses.length < 75 && screenStatuses[screenStatuses.length - 1] === 429,
     '大屏接口触发按用户读取限流（M3）', `连续 ${screenStatuses.length} 次后触发 429`);
 
   console.log('\n【7】按执行者导出');

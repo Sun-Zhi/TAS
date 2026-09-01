@@ -51,7 +51,10 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    // img-src 追加 data:：日历控件的 SVG 图标内联在 style.css 的 background-image
+    // data URI 中（仅此一处，评审 S4），default-src 'self' 会拦掉它导致图标不显示；
+    // data: 仅用于图标级内联图像，与 script-src 'self' 的收紧不冲突。
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
   );
   next();
 });

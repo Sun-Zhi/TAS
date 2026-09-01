@@ -80,18 +80,61 @@ function toLocalISO(date) {
     `${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`;
 }
 
+const API_TIMEOUT_MS = 30000;
+
+function apiError(message, status, code) {
+  const error = new Error(message);
+  if (status !== undefined) error.status = status;
+  if (code) error.code = code;
+  return error;
+}
+
+/** 判断某个 api() 抛出的错误是否为「未登录，api() 已在跳转登录页」：
+ *  调用方无需再为这种错误弹 toast，跳转期间的报错只会让用户看到一闪而过的误导提示。 */
+function isAuthRedirectError(error) {
+  return Boolean(error) && (error.code === 'AUTH_REQUIRED' || error.status === 401);
+}
+
 async function api(url, options = {}) {
-  const opt = { credentials: 'same-origin', ...options };
+  const { timeoutMs = API_TIMEOUT_MS, signal, ...requestOptions } = options;
+  const opt = { credentials: 'same-origin', ...requestOptions };
   if (opt.body && !(opt.body instanceof FormData)) {
     opt.headers = { 'Content-Type': 'application/json', ...(opt.headers || {}) };
     opt.body = typeof opt.body === 'string' ? opt.body : JSON.stringify(opt.body);
   }
-  const res = await fetch(url, opt);
-  if (res.status === 401) { location.href = '/login.html'; throw new Error('未登录'); }
-  const ct = res.headers.get('content-type') || '';
-  const data = ct.includes('json') ? await res.json() : await res.text();
-  if (!res.ok) throw new Error((data && data.error) || '请求失败');
-  return data;
+
+  const controller = new AbortController();
+  let timeout;
+  let timedOut = false;
+  const abortWithCaller = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', abortWithCaller, { once: true });
+  }
+  if (timeoutMs > 0) timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  opt.signal = controller.signal;
+  try {
+    const res = await fetch(url, opt);
+    if (res.status === 401) {
+      location.href = '/login.html';
+      throw apiError('未登录', 401, 'AUTH_REQUIRED');
+    }
+    const ct = res.headers.get('content-type') || '';
+    const data = ct.includes('json') ? await res.json() : await res.text();
+    if (!res.ok) {
+      const message = data && typeof data.error === 'string' ? data.error : '请求失败';
+      throw apiError(message, res.status, data && data.code);
+    }
+    return data;
+  } catch (error) {
+    // 只有内部超时触发的 abort 才提示「超时」；调用方自己传入 signal 主动取消时，
+    // 保留原生 AbortError 抛给调用方自行判断（例如用户主动取消筛选请求，不应显示成超时）。
+    if (error && error.name === 'AbortError' && timedOut) throw apiError('请求超时，请稍后重试', 408, 'REQUEST_TIMEOUT');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    if (signal) signal.removeEventListener('abort', abortWithCaller);
+  }
 }
 
 function uploadForm(url, formData, { onProgress, onUploaded, signal, timeoutMs = 30 * 60 * 1000 } = {}) {

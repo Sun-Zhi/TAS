@@ -50,31 +50,54 @@ function clearScreenError() {
 
 /* 数据加载 */
 let screenLoadInFlight = false;
+// 429 退避状态：被限流时把 10 秒轮询逐级拉长（20s→40s→60s 封顶），
+// 不与限流窗口硬顶、恢复后回到原速。滑窗限流本身会自愈（被拒不计数、
+// 旧计数随时间溢出），退避只是让系统更快平静并省掉限流期间的无效轮询。
+let refreshDelayMs = 10000;
+
+function nextRefreshDelay() {
+  // 多块大屏可能共用一个账号；加入小幅抖动，避免成功或退避后再次同相请求。
+  return Math.round(refreshDelayMs * (0.8 + Math.random() * 0.4));
+}
+
+/* 返回 true 表示本轮被 429 限流，null 表示跳过，其余情况返回 false */
 async function load() {
   // 上一轮请求未完成时直接跳过本轮，避免轮询请求堆积重入
-  if (screenLoadInFlight) return;
+  if (screenLoadInFlight) return null;
   screenLoadInFlight = true;
   let data;
   try {
     const res = await fetch('/api/screen', { credentials: 'same-origin' });
-    if (res.status === 401) { location.href = '/login.html'; return; }
+    if (res.status === 401) { location.href = '/login.html'; return false; }
     if (!res.ok) {
       // 保留页面上次成功加载的数据，只提示刷新失败
+      if (res.status === 429) {
+        // 429 = 超过限流阈值：这是多屏等场景下的临时状态且会自行恢复，
+        // 明确告知用户「稍后自动恢复」，与普通加载失败区分开
+        showScreenError('数据刷新失败（请求过于频繁，稍后自动恢复）');
+        console.error('大屏数据加载被限流（HTTP 429）');
+        return true;
+      }
       showScreenError('数据刷新失败，页面显示的是上次成功加载的数据');
       console.error('大屏数据加载失败，HTTP', res.status);
-      return;
+      return false;
     }
     data = await res.json();
-    clearScreenError();
   } catch (error) {
     showScreenError('数据刷新失败，页面显示的是上次成功加载的数据');
     console.error('大屏数据加载失败', error);
-    return;
+    return false;
   } finally {
     screenLoadInFlight = false;
   }
 
-  const s = data.summary;
+  try {
+    if (!data || !data.summary || !Array.isArray(data.running) || !Array.isArray(data.done) ||
+      !Array.isArray(data.trend) || !Array.isArray(data.categories)) {
+      throw new Error('大屏响应数据格式无效');
+    }
+    clearScreenError();
+    const s = data.summary;
   $('#kpis').innerHTML = `
     <div class="kpi"><div class="k">任务总数</div><div class="v">${s.total}</div><div class="d">今日新建 ${s.created_today}</div></div>
     <div class="kpi c2"><div class="k">执行中</div><div class="v">${s.running}</div><div class="d">进行中的任务</div></div>
@@ -137,7 +160,7 @@ async function load() {
         <i class="c" title="新建 ${d.created}"></i>
         <i class="d" title="完成 ${d.done}"></i>
       </div>
-      <div class="lb">${d.date}</div>
+      <div class="lb">${esc(d.date)}</div>
     </div>`).join('');
   $('#trend').querySelectorAll('.col').forEach((col, i) => {
     const d = data.trend[i];
@@ -156,15 +179,32 @@ async function load() {
   $('#listCat').querySelectorAll('.cat').forEach((row, i) => {
     row.querySelector('.track i').style.width = `${(data.categories[i].total / maxCat) * 100}%`;
   });
+  } catch (error) {
+    showScreenError('数据刷新失败，页面显示的是上次成功加载的数据');
+    console.error('大屏数据渲染失败', error);
+    return false;
+  }
+  return false;
 }
 
-load();
-// 递归 setTimeout 轮询：上一轮完成后才调度下一轮，避免固定间隔下的请求堆积
+load().catch((error) => console.error('大屏首次加载失败', error));
+// 递归 setTimeout 轮询：上一轮完成后才调度下一轮，避免固定间隔下的请求堆积。
+// 本轮被 429 限流则把间隔加倍（10s→20s→40s→60s 封顶），成功后回到 10 秒原速。
 function scheduleScreenRefresh() {
   setTimeout(async () => {
-    await load();
-    scheduleScreenRefresh();
-  }, 10000);
+    try {
+      const limited = await load();
+      if (limited === true) refreshDelayMs = Math.min(refreshDelayMs * 2, 60000);
+      else if (limited === false) refreshDelayMs = 10000;
+      // 本轮跳过时保持当前退避级别，避免在途请求造成退避错误重置。
+    } catch (error) {
+      // 即使渲染或页面环境异常，也必须继续轮询，避免一次坏响应永久停止刷新。
+      console.error('大屏轮询失败', error);
+      refreshDelayMs = 10000;
+    } finally {
+      scheduleScreenRefresh();
+    }
+  }, nextRefreshDelay());
 }
 scheduleScreenRefresh();
 
