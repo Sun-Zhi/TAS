@@ -51,7 +51,6 @@ function fmtLocal(iso) {
 
 const PRIORITY_TEXT = { low: '低', normal: '普通', high: '高', urgent: '紧急' };
 const STATUS_TEXT = { in_progress: '执行中', completed: '已完成' };
-const ROLE_TEXT = { admin: '管理员', assigner: '任务分配者', executor: '任务执行者' };
 
 /** 仅 1/true/yes 视为启用；'0'、空字符串、空格等其他值一律视为关闭 */
 function isTruthyEnv(value) {
@@ -73,6 +72,6 @@ function validatePassword(password) {
 
 module.exports = {
   humanDuration, taskDuration, toCSV, fmtLocal,
-  PRIORITY_TEXT, STATUS_TEXT, ROLE_TEXT, isTruthyEnv,
+  PRIORITY_TEXT, STATUS_TEXT, isTruthyEnv,
   validatePassword,
 };

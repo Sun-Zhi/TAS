@@ -711,6 +711,13 @@ textarea.input { resize: vertical; min-height: 88px; }
 }
 
 /* ---------- 表格 ---------- */
+/* 任务表有 9 列且表头中文不换行，窄屏下必然超出视口宽度。
+ * 让它在面板内部横向滚动，否则溢出会一路顶到 document，整页可横拖、顶栏跟着跑偏。 */
+.tbl-scroll { overflow-x: auto; }
+/* 保底宽度贴近表格自然宽度（约 1006px）：除「任务」外的 8 列都 nowrap 不可压缩，
+ * 容器一窄，压缩就全落在唯一可换行的任务列上，标题被压成逐字竖排。
+ * 这条不能只写在手机断点里——760~1000px（平板竖屏）同样会被压。 */
+.tbl-scroll table.tbl { min-width: 1000px; }
 table.tbl { width: 100%; border-collapse: collapse; }
 table.tbl th {
   text-align: left; font-size: 12.5px; color: var(--text-sub); font-weight: 600;
@@ -861,6 +868,34 @@ table.tbl tbody tr.sel:hover { background: rgba(var(--accent2-rgb), .18); }
   .login-hero { display: none; }
   .grid2 { grid-template-columns: 1fr; }
   .container { padding: 14px; }
+}
+
+/* ---------- 手机竖屏 ----------
+ * 900px 那档只管登录页与 .grid2，顶栏和任务表在其之下仍按桌面排布：
+ * 顶栏一行塞不下就把导航压成逐字竖排，任务表 700+px 宽直接撑破 390px 视口。 */
+@media (max-width: 760px) {
+  /* 折行后顶栏高达三行，再 sticky 会常驻吃掉近 1/6 屏高，手机上改为随页面滚走 */
+  .topbar { position: static; height: auto; flex-wrap: wrap; padding: 10px 14px; gap: 8px 10px; }
+  .logo { font-size: 15px; }
+  .logo .mark { width: 24px; height: 24px; font-size: 13px; }
+
+  /* 导航独占一行并横向滚动：条目数随角色变化，压缩排布比横滚更容易读错 */
+  .nav { order: 3; width: 100%; margin-left: 0; overflow-x: auto; flex-wrap: nowrap; }
+  .nav a { padding: 6px 11px; white-space: nowrap; }
+
+  /* 角色行让位给按钮；姓名限宽省略，避免长姓名把顶栏顶到第三行 */
+  .userbox { gap: 8px; }
+  .userbox .meta .rl { display: none; }
+  .userbox .meta .nm { max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .userbox .btn.sm { padding: 5px 9px; font-size: 12px; }
+
+  .page-head h2 { font-size: 18px; }
+  .panel-head { padding: 12px 14px; }
+  .panel-body { padding: 14px; }
+
+  /* 筛选栏的固定宽度在 390px 下会挤成两行半，改为按行等分 */
+  .filters .round-select { flex: 1 1 140px; width: auto; }
+  .filters .search { flex: 1 1 200px; min-width: 0; }
 }
 
 /* ============ 通用工具类 ============

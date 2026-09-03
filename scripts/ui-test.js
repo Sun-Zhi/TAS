@@ -38,6 +38,40 @@ let serverOutput = '';
 
 let pass = 0;
 let failed = 0;
+/**
+ * 从已内联的样式表里取某条规则的声明值。
+ * jsdom 不做布局，量不到 scrollWidth；响应式回归只能落在「规则是否还在」这一层，
+ * 用来挡住把这些规则误删或改回断点内部的回退。
+ */
+function cssRuleValue(doc, selector, prop) {
+  for (const sheet of Array.from(doc.styleSheets)) {
+    for (const rule of Array.from(sheet.cssRules || [])) {
+      if (rule.selectorText === selector && rule.style) {
+        const v = rule.style.getPropertyValue(prop);
+        if (v) return v.trim();
+      }
+    }
+  }
+  return null;
+}
+
+/** 判断存在覆盖指定宽度的 max-width 媒体查询，且其中命中了某个选择器 */
+function hasMediaRule(doc, width, selector) {
+  for (const sheet of Array.from(doc.styleSheets)) {
+    for (const rule of Array.from(sheet.cssRules || [])) {
+      if (rule.type !== 4 /* CSSMediaRule */) continue;
+      const cond = String(rule.conditionText || (rule.media && rule.media.mediaText) || '')
+        .split(' ').join('');
+      const at = cond.indexOf('max-width:');
+      if (at < 0) continue;
+      const px = parseInt(cond.slice(at + 'max-width:'.length), 10);
+      if (!px || px > width) continue;
+      if (Array.from(rule.cssRules || []).some((r) => r.selectorText === selector)) return true;
+    }
+  }
+  return false;
+}
+
 function ok(cond, label, extra = '') {
   if (cond) { pass++; console.log(`  ✓ ${label}`); }
   else { failed++; console.log(`  ✗ ${label}${extra ? `（${extra}）` : ''}`); }
@@ -358,6 +392,15 @@ async function testWorkbenchAndCreateTask() {
   await waitFor(() => doc.querySelector('#taskTableWrap').innerHTML.length > 0, { timeout: 8000 });
   ok(true, '任务列表区域已渲染');
 
+  // 窄屏回归（CSS 规则层，与列表是否有数据无关）：9 列任务表必须被 .tbl-scroll 兜住
+  // 并保留保底宽度。缺任一条，390px 视口下要么整页横向溢出（实测 scrollWidth 746 > 390），
+  // 要么「任务」列被压到 60px 而逐字竖排。jsdom 不做布局，只能断言规则本身还在。
+  ok(cssRuleValue(doc, '.tbl-scroll', 'overflow-x') === 'auto',
+    '.tbl-scroll 声明了 overflow-x: auto');
+  ok(parseInt(cssRuleValue(doc, '.tbl-scroll table.tbl', 'min-width') || '0', 10) >= 1000,
+    '表格保底宽度 >= 1000px（避免任务列被压成逐字竖排）');
+  ok(hasMediaRule(doc, 760, '.topbar'), 'style.css 存在 760px 手机断点并调整顶栏');
+
   const beforeText = doc.querySelector('#taskTableWrap').innerHTML;
 
   // 打开「发布新任务」弹窗
@@ -381,6 +424,14 @@ async function testWorkbenchAndCreateTask() {
 
   // 断言：列表中出现了新任务标题，且弹窗已关闭
   ok(doc.querySelector('#taskTableWrap').innerHTML.includes(title), '新建任务出现在任务列表 DOM 中');
+
+  // 表格已有数据，此时才能断言 DOM 结构：滚动容器包住表格、「加载更多」留在容器外
+  const scrollWrap = doc.querySelector('#taskTableWrap .tbl-scroll');
+  ok(!!scrollWrap, '任务表被 .tbl-scroll 横向滚动容器包裹',
+    doc.querySelector('#taskTableWrap').innerHTML.slice(0, 160));
+  ok(!!scrollWrap && !!scrollWrap.querySelector('table.tbl'), '表格位于滚动容器内部');
+  ok(!!scrollWrap && !scrollWrap.querySelector('.load-more'),
+    '「加载更多」留在滚动容器外（否则按钮会跟着表格横向跑出屏幕）');
   ok(!doc.querySelector('#taskModal').classList.contains('show'), '提交后任务弹窗已关闭');
   ok(doc.querySelector('#toast').className.includes('show'), '提交后出现成功提示 toast');
 
@@ -477,10 +528,10 @@ async function testScreenPage() {
     body: JSON.stringify({ username: 'admin', password: ADMIN_PASSWORD }),
   });
   jar.setFromResponse(loginRes);
-  // 用 buildHtml 内联 theme.js/screen.js 与 style.css/screen.css：此前直接喂原始
+  // 用 buildHtml 按生产顺序内联 theme.js/util.js/screen.js 与 style.css/screen.css：此前直接喂原始
   // screen.html，外链脚本与 CSS 都不会被 jsdom 加载，原「渲染统计信息」断言
   // 命中的其实是静态 HTML 里的字符串，screen.css 从未被验证（评审 P2）。
-  const html = buildHtml('screen.html', ['theme.js', 'screen.js']);
+  const html = buildHtml('screen.html', ['theme.js', 'util.js', 'screen.js']);
   const dom = newDom(html, jar, { url: BASE + '/screen.html' });
   const { window } = dom;
   const doc = window.document;
@@ -490,6 +541,13 @@ async function testScreenPage() {
     Array.from(sheet.cssRules || []).some((rule) => rule.selectorText === '.screen')
   );
   ok(hasScreenCss, '外置样式 screen.css 已内联加载（.screen 规则存在）');
+  // 窄屏回归：标题是 flex 子项，可收缩时中文会在任意字间断行。
+  // 曾在 390px 下被压成 32px 宽 × 288px 高（一字一行），768px 下压成两行。
+  ok(cssRuleValue(doc, '.hd h1', 'flex') === 'none' ||
+    cssRuleValue(doc, '.hd h1', 'flex-grow') === '0',
+    '大屏标题不参与 flex 压缩');
+  ok(cssRuleValue(doc, '.hd h1', 'white-space') === 'nowrap', '大屏标题禁止换行');
+  ok(hasMediaRule(doc, 760, '.main'), 'screen.css 存在 760px 手机断点并改为单列主体');
   // screen.js 通过桥接 fetch 真实拉取 /api/screen 渲染 KPI 与列表计数
   await waitFor(() => doc.querySelector('#kpis').children.length > 0, { timeout: 10000 });
   ok(true, '数据大屏页面加载并渲染统计信息');

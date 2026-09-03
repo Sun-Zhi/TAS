@@ -22,8 +22,12 @@ body::before{
 .screen{position:relative;height:100vh;display:flex;flex-direction:column;padding:14px 20px 18px;}
 
 /* 头部 */
-.hd{display:flex;align-items:center;gap:18px;padding-bottom:12px;border-bottom:1px solid var(--border);}
+/* 放不下时让其它元素换行，而不是把标题压窄 */
+.hd{display:flex;flex-wrap:wrap;align-items:center;gap:18px;padding-bottom:12px;border-bottom:1px solid var(--border);}
 .hd h1{
+  /* 标题是 flex 子项，默认可收缩：中文能在任意字间断行，一压就变成逐字竖排。
+   * 同样不能只写在手机断点里——760~900px 也会被压成两行。 */
+  flex:none;white-space:nowrap;
   margin:0;font-size:27px;letter-spacing:5px;font-weight:700;
   background:var(--grad-title);
   -webkit-background-clip:text;background-clip:text;color:transparent;
@@ -137,6 +141,34 @@ body::before{
   .kpis{grid-template-columns:repeat(3,1fr);}
   .main{grid-template-columns:1fr 1fr;}
   .col3{display:none;}
+}
+
+/* ---------- 手机竖屏 ----------
+ * 上面只有 1500px 一档，降到 KPI 3 列 / 主体 2 列就到底了：390px 宽时每列仅 168px，
+ * 标题和任务条目被压成逐字竖排。手机上放弃「一屏看板」，改成可纵向滚动的窄屏布局。 */
+@media (max-width:760px){
+  /* 固定视口是给大屏投放用的；手机上必须允许纵向滚动，否则内容直接看不全 */
+  body{overflow:auto;font-size:15px;}
+  .screen{height:auto;min-height:100vh;padding:12px 12px 16px;}
+
+  .hd{gap:8px 12px;}
+  .hd h1{font-size:19px;letter-spacing:2px;}
+  .hd .sp{display:none;}
+  .hd .clock{font-size:13px;}
+  .hd .clock b{font-size:17px;margin-right:7px;}
+
+  .kpis{grid-template-columns:repeat(2,1fr);gap:9px;margin:12px 0;}
+  .kpi{padding:10px 12px;}
+  .kpi .v{font-size:25px;}
+  .kpi .v.small{font-size:17px;}
+
+  .main{grid-template-columns:1fr;}
+  /* 单列后卡片失去 flex 高度约束，而 .scroller 是绝对定位，必须显式给出高度 */
+  .card-bd{height:46vh;min-height:240px;}
+
+  .item{gap:9px;}
+  .item .id{width:44px;}
+  .item .tt{font-size:13.5px;}
 }
 
 /* ============ 修饰类（替代原内联 style 属性，CSP style-src 'self'） ============ */

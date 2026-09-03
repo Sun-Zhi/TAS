@@ -142,7 +142,6 @@ function clearAuthCookie(res) {
 }
 
 module.exports = {
-  COOKIE_NAME,
   attachUser,
   requireLogin,
   requireRole,

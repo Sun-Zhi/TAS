@@ -300,4 +300,4 @@ const DUMMY_HASH = formatScryptHash('1'.repeat(32), Buffer.alloc(64, 0x64), SCRY
 // 消除跨账号/跨哈希格式的登录延迟差（账号存在性枚举）。
 const DUMMY_HASH_LEGACY = `scrypt$${'2'.repeat(32)}$${Buffer.alloc(64, 0x65).toString('hex')}`;
 
-module.exports = { db, hashPassword, hashPasswordAsync, verifyPassword, verifyPasswordAsync, isLegacyHash, parseStoredHash, nowISO, UPLOAD_DIR, DATA_DIR, ROOT, DUMMY_HASH, DUMMY_HASH_LEGACY };
+module.exports = { db, hashPassword, hashPasswordAsync, verifyPassword, verifyPasswordAsync, isLegacyHash, parseStoredHash, nowISO, UPLOAD_DIR, DATA_DIR, DUMMY_HASH, DUMMY_HASH_LEGACY };

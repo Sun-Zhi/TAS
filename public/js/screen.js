@@ -1,14 +1,11 @@
 /* ============ 数据大屏 ============ */
 'use strict';
 
-const $ = (s) => document.querySelector(s);
+/* $ / esc 复用 util.js（screen.html 先加载 util.js）。
+ * 下面的 fmt / elapsed / PRI / ROLE 是大屏故意的紧凑变体（省年份、"时"代替"小时"、
+ * 短角色名），与工作台 util.js 的全称版行为不同，请勿为"去重"而合并。 */
 const PRI = { low: '低', normal: '普通', high: '高', urgent: '紧急' };
 const ROLE = { admin: '管理员', assigner: '分配者', executor: '执行者' };
-
-function esc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
 
 function fmt(iso) {
   if (!iso) return '-';

@@ -275,12 +275,13 @@ function renderTasks() {
     ? `<th class="cb-col"><input type="checkbox" id="selAll" ${allSel ? 'checked' : ''} data-action="toggle-all"></th>`
     : '<th class="cb-col"></th>';
 
-  $('#taskTableWrap').innerHTML = `<table class="tbl">
+  // 表格单独包一层横向滚动容器：9 列表格在窄屏必然超宽，不兜住会一路撑破整页
+  $('#taskTableWrap').innerHTML = `<div class="tbl-scroll"><table class="tbl">
     <thead><tr>
       ${cbHead}
       <th>编号</th><th>任务</th><th>任务接收人</th><th>优先级</th><th>状态</th><th>创建时间</th><th>耗时 / 进度</th><th>操作</th>
     </tr></thead>
-    <tbody>${list.map(renderTaskRow).join('')}</tbody></table>${loadMoreButtonHtml()}`;
+    <tbody>${list.map(renderTaskRow).join('')}</tbody></table></div>${loadMoreButtonHtml()}`;
 
   // 批量删除按钮显隐
   updateBatchDelUI();
